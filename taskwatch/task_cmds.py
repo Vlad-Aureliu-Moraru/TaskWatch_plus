@@ -1,0 +1,287 @@
+import re
+from datetime import date, datetime
+from .db import get_conn
+from .models import Task
+
+DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+VALID_REPEAT_TYPES = {"daily", "weekly", "biweekly", "monthly", "yearly", "none"}
+
+
+def _clamp(val: int, lo: int, hi: int, name: str) -> int:
+    if val < lo or val > hi:
+        raise ValueError(f"{name} must be between {lo} and {hi}, got {val}")
+    return val
+
+
+def _validate_date(val: str) -> str:
+    if val == "none":
+        return val
+    if not DATE_RE.match(val):
+        raise ValueError(f"date must be dd/MM/yyyy or 'none', got '{val}'")
+    try:
+        datetime.strptime(val, "%d/%m/%Y")
+    except ValueError:
+        raise ValueError(f"invalid date: '{val}'")
+    return val
+
+
+def _validate_repeatable_type(val: str) -> str:
+    if val.lower() not in VALID_REPEAT_TYPES:
+        raise ValueError(f"repeatable_type must be one of {VALID_REPEAT_TYPES}, got '{val}'")
+    return val.lower()
+
+
+VALID_ORDER_COLUMNS = {"urgency", "difficulty", "name", "deadline", "id", "time_dedicated"}
+
+
+def list_tasks(directory_id: int | None = None,
+               finished: bool | None = None,
+               order_by: str | None = None,
+               order_dir: str = "asc") -> list[Task]:
+    conn = get_conn()
+    conditions = []
+    params = []
+    if directory_id is not None:
+        conditions.append("directory_id = ?")
+        params.append(directory_id)
+    if finished is not None:
+        conditions.append("finished = ?")
+        params.append(1 if finished else 0)
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    if order_by is not None and order_by in VALID_ORDER_COLUMNS:
+        dir_sql = "DESC" if order_dir.lower() == "desc" else "ASC"
+        order_clause = f"ORDER BY {order_by} {dir_sql}"
+    else:
+        order_clause = "ORDER BY id"
+
+    sql = f"SELECT * FROM tasks {where} {order_clause}"
+    rows = conn.execute(sql, params).fetchall()
+    return [_row_to_task(r) for r in rows]
+
+
+def get_task(task_id: int) -> Task | None:
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return _row_to_task(row) if row else None
+
+
+def create_task(
+    directory_id: int,
+    name: str,
+    description: str = "",
+    deadline: str = "none",
+    urgency: int = 1,
+    difficulty: int = 1,
+    time_dedicated: int = 0,
+    repeatable: bool = False,
+    repeatable_type: str = "none",
+    has_to_be_completed_to_repeat: bool = True,
+    repeat_on_specific_day: str = "none",
+) -> Task:
+    _clamp(urgency, 1, 5, "urgency")
+    _clamp(difficulty, 1, 5, "difficulty")
+    _clamp(time_dedicated, 0, 99999, "time_dedicated")
+    deadline = _validate_date(deadline)
+    repeatable_type = _validate_repeatable_type(repeatable_type)
+
+    if repeatable and repeatable_type == "none":
+        raise ValueError("repeatable_type is required when repeatable is True")
+
+    conn = get_conn()
+    cur = conn.execute(
+        """INSERT INTO tasks
+           (directory_id, name, description, deadline, urgency, difficulty,
+            time_dedicated, repeatable, repeatable_type, has_to_be_completed_to_repeat,
+            repeat_on_specific_day)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (directory_id, name, description, deadline, urgency, difficulty,
+         time_dedicated, int(repeatable), repeatable_type, int(has_to_be_completed_to_repeat),
+         repeat_on_specific_day),
+    )
+    conn.commit()
+    return Task(id=cur.lastrowid, directory_id=directory_id, name=name,
+                description=description, deadline=deadline, urgency=urgency,
+                difficulty=difficulty, time_dedicated=time_dedicated,
+                repeatable=repeatable, repeatable_type=repeatable_type,
+                has_to_be_completed_to_repeat=has_to_be_completed_to_repeat,
+                repeat_on_specific_day=repeat_on_specific_day)
+
+
+def edit_task(task_id: int, **kwargs) -> Task | None:
+    allowed = {"name", "description", "deadline", "urgency", "difficulty",
+               "repeatable", "finished", "repeatable_type", "time_dedicated",
+               "has_to_be_completed_to_repeat", "repeat_on_specific_day"}
+    updates = {}
+    for k, v in kwargs.items():
+        if k not in allowed or v is None:
+            continue
+        if k == "deadline":
+            v = _validate_date(v)
+        elif k == "urgency":
+            v = _clamp(v, 1, 5, "urgency")
+        elif k == "difficulty":
+            v = _clamp(v, 1, 5, "difficulty")
+        elif k == "time_dedicated":
+            v = _clamp(v, 0, 99999, "time_dedicated")
+        elif k == "repeatable":
+            v = int(v)
+        elif k == "finished":
+            v = int(v)
+        elif k == "repeatable_type":
+            v = _validate_repeatable_type(v)
+        elif k == "has_to_be_completed_to_repeat":
+            v = int(v)
+        updates[k] = v
+
+    if "finished" in updates and updates["finished"] and "finished_date" not in updates:
+        updates["finished_date"] = date.today().strftime("%d/%m/%Y")
+
+    if not updates:
+        return None
+
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    vals = list(updates.values()) + [task_id]
+    conn = get_conn()
+    cur = conn.execute(
+        f"UPDATE tasks SET {set_clause} WHERE id = ?", vals
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        return None
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return _row_to_task(row) if row else None
+
+
+def advance_deadline(task: Task, reset_finished: bool = True) -> Task | None:
+    if not task.repeatable or task.repeatable_type == "none":
+        return None
+
+    try:
+        if task.has_to_be_completed_to_repeat:
+            base_str = task.finished_date if task.finished_date != "none" else date.today().strftime("%d/%m/%Y")
+        else:
+            base_str = task.deadline
+
+        if base_str == "none":
+            return None
+
+        base = datetime.strptime(base_str, "%d/%m/%Y").date()
+    except (ValueError, TypeError):
+        return None
+
+    rtype = task.repeatable_type.lower()
+    if rtype == "daily":
+        new_deadline = (base + __import__("datetime").timedelta(days=1)).isoformat()
+    elif rtype == "weekly":
+        new_deadline = (base + __import__("datetime").timedelta(weeks=1)).isoformat()
+    elif rtype == "biweekly":
+        new_deadline = (base + __import__("datetime").timedelta(weeks=2)).isoformat()
+    elif rtype == "monthly":
+        y = base.year + (base.month) // 12
+        m = (base.month % 12) + 1
+        if m == 13:
+            m = 1
+            y += 1
+        import calendar
+        last = calendar.monthrange(y, m)[1]
+        d = min(base.day, last)
+        new_deadline = date(y, m, d).isoformat()
+    elif rtype == "yearly":
+        try:
+            new_deadline = base.replace(year=base.year + 1).isoformat()
+        except ValueError:
+            new_deadline = date(base.year + 1, 3, 1).isoformat()  # feb 29 fallback
+    else:
+        return None
+
+    new_deadline_fmt = datetime.strptime(new_deadline, "%Y-%m-%d").strftime("%d/%m/%Y")
+
+    conn = get_conn()
+    if reset_finished:
+        cur = conn.execute(
+            "UPDATE tasks SET deadline = ?, finished = 0, finished_date = 'none' WHERE id = ?",
+            (new_deadline_fmt, task.id),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE tasks SET deadline = ? WHERE id = ?",
+            (new_deadline_fmt, task.id),
+        )
+    conn.commit()
+    if cur.rowcount == 0:
+        return None
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task.id,)).fetchone()
+    return _row_to_task(row) if row else None
+
+
+def mark_done(task_id: int) -> Task | None:
+    today = date.today().strftime("%d/%m/%Y")
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE tasks SET finished = 1, finished_date = ? WHERE id = ?",
+        (today, task_id),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        return None
+
+    task = get_task(task_id)
+    if task and task.repeatable and task.repeatable_type != "none":
+        task = advance_deadline(task, reset_finished=False)
+
+    return task if task else None
+
+
+def mark_not_done(task_id: int) -> Task | None:
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE tasks SET finished = 0, finished_date = 'none' WHERE id = ?",
+        (task_id,),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        return None
+    return get_task(task_id)
+
+
+def reset_overdue_repeatables() -> int:
+    today = date.today().strftime("%d/%m/%Y")
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE repeatable = 1 AND finished = 1 AND deadline != 'none' AND deadline <= ?",
+        (today,),
+    ).fetchall()
+    count = 0
+    for r in rows:
+        task = _row_to_task(r)
+        if advance_deadline(task):
+            count += 1
+    return count
+
+
+def delete_task(task_id: int) -> bool:
+    conn = get_conn()
+    cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def _row_to_task(r) -> Task:
+    return Task(
+        id=r["id"],
+        directory_id=r["directory_id"],
+        name=r["name"],
+        description=r["description"],
+        time_dedicated=r["time_dedicated"],
+        repeatable=bool(r["repeatable"]),
+        finished=bool(r["finished"]),
+        deadline=r["deadline"],
+        urgency=r["urgency"],
+        repeatable_type=r["repeatable_type"],
+        difficulty=r["difficulty"],
+        finished_date=r["finished_date"],
+        has_to_be_completed_to_repeat=bool(r["has_to_be_completed_to_repeat"]),
+        repeat_on_specific_day=r["repeat_on_specific_day"],
+    )

@@ -1,0 +1,2 @@
+[console_scripts]
+taskwatch = taskwatch.__main__:main
