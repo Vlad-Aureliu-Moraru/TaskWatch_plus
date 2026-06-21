@@ -14,9 +14,9 @@ A system-integrated terminal task tracker with Waybar support.
 
 ### From a release (recommended)
 
-1. Download `taskwatch-v0.1.0-linux-x86_64.tar.gz` from [Releases](https://github.com/Vlad-Aureliu-Moraru/TaskWatch-/releases)
-2. Extract: `tar xzf taskwatch-v0.1.0-linux-x86_64.tar.gz`
-3. Install: `cd taskwatch-v0.1.0 && ./install.sh`
+1. Download `taskwatch-v0.1.1-linux-x86_64.tar.gz` from [Releases](https://github.com/Vlad-Aureliu-Moraru/TaskWatch-/releases)
+2. Extract: `tar xzf taskwatch-v0.1.1-linux-x86_64.tar.gz`
+3. Install: `cd taskwatch-v0.1.1 && ./install.sh`
 4. Launch: `taskwatch`
 
 ### From source
