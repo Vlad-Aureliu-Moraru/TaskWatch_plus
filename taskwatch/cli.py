@@ -1,6 +1,6 @@
 import argparse
 import sys
-from . import archive_cmds, directory_cmds, task_cmds, note_cmds, timer
+from . import archive_cmds, directory_cmds, io_cmds, note_cmds, tag_cmds, task_cmds, timer
 from .db import close
 
 
@@ -96,6 +96,29 @@ def build_parser() -> argparse.ArgumentParser:
     tms = tm_sub.add_parser("show")
     tms.add_argument("task_id", type=int)
 
+    # ── tag ──
+    tg = sub.add_parser("tag")
+    tg_sub = tg.add_subparsers(dest="action", required=True)
+    tg_sub.add_parser("list")
+    tgc = tg_sub.add_parser("create")
+    tgc.add_argument("name")
+    tgd = tg_sub.add_parser("delete")
+    tgd.add_argument("id", type=int)
+    tga = tg_sub.add_parser("add")
+    tga.add_argument("task_id", type=int)
+    tga.add_argument("name")
+    tgr = tg_sub.add_parser("remove")
+    tgr.add_argument("task_id", type=int)
+    tgr.add_argument("name")
+    tgt = tg_sub.add_parser("tasks")
+    tgt.add_argument("name")
+
+    # ── export / import ──
+    ex = sub.add_parser("export")
+    ex.add_argument("path", nargs="?", default="/tmp/taskwatch_export.json")
+    im = sub.add_parser("import")
+    im.add_argument("path")
+
     # ── tui ──
     sub.add_parser("tui")
 
@@ -113,6 +136,13 @@ def run(args: list[str] | None = None):
         tui_run()
         return
 
+    if entity == "export":
+        _handle_export(opts)
+        return
+    if entity == "import":
+        _handle_import(opts)
+        return
+
     action = opts.action
 
     try:
@@ -126,6 +156,8 @@ def run(args: list[str] | None = None):
             _handle_note(action, opts)
         elif entity == "timer":
             _handle_timer(action, opts)
+        elif entity == "tag":
+            _handle_tag(action, opts)
         elif entity == "tui":
             from .tui import run_tui as tui_run
             tui_run()
@@ -255,3 +287,55 @@ def _handle_timer(action: str, opts):
             print(f"Task {opts.task_id} not found", file=sys.stderr)
             sys.exit(1)
         print(timer.format_schedule(task))
+
+
+def _handle_export(opts):
+    if io_cmds.export_data(opts.path):
+        print(f"Exported to {opts.path}")
+    else:
+        print("Export failed", file=sys.stderr)
+        sys.exit(1)
+
+
+def _handle_import(opts):
+    result = io_cmds.import_data(opts.path)
+    print(result)
+    if "failed" in result:
+        sys.exit(1)
+
+
+def _handle_tag(action: str, opts):
+    if action == "list":
+        for t in tag_cmds.list_tags():
+            print(f"{t.id}: {t.name}")
+    elif action == "create":
+        t = tag_cmds.create_tag(opts.name)
+        print(f"Created tag {t.id}: {t.name}")
+    elif action == "delete":
+        if tag_cmds.delete_tag(opts.id):
+            print(f"Deleted tag {opts.id}")
+        else:
+            print(f"Tag {opts.id} not found", file=sys.stderr)
+            sys.exit(1)
+    elif action == "add":
+        t = tag_cmds.add_tag_to_task(opts.task_id, opts.name)
+        if t:
+            print(f"Added tag '{t.name}' to task {opts.task_id}")
+        else:
+            print("Failed to add tag", file=sys.stderr)
+            sys.exit(1)
+    elif action == "remove":
+        if tag_cmds.remove_tag_from_task(opts.task_id, opts.name):
+            print(f"Removed tag '{opts.name}' from task {opts.task_id}")
+        else:
+            print("Tag not found on task", file=sys.stderr)
+            sys.exit(1)
+    elif action == "tasks":
+        task_ids = tag_cmds.get_tasks_by_tag(opts.name)
+        if task_ids:
+            for tid in task_ids:
+                task = task_cmds.get_task(tid)
+                if task:
+                    print(f"{tid}: {task.name}")
+        else:
+            print("No tasks with that tag")

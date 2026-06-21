@@ -42,3 +42,21 @@ def delete_directory(directory_id: int) -> bool:
     cur = conn.execute("DELETE FROM directories WHERE id = ?", (directory_id,))
     conn.commit()
     return cur.rowcount > 0
+
+
+def move_directory(dir_id: int, new_archive_id: int) -> Directory | None:
+    conn = get_conn()
+    arch_exists = conn.execute(
+        "SELECT id FROM archives WHERE id = ?", (new_archive_id,)
+    ).fetchone()
+    if arch_exists is None:
+        return None
+    conn.execute(
+        "UPDATE directories SET archive_id = ? WHERE id = ?",
+        (new_archive_id, dir_id),
+    )
+    conn.commit()
+    row = conn.execute("SELECT id, archive_id, name FROM directories WHERE id = ?", (dir_id,)).fetchone()
+    if row is None:
+        return None
+    return Directory(id=row["id"], archive_id=row["archive_id"], name=row["name"])

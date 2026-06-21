@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=TaskWatch+
+Exec=taskwatch
+Icon=TaskWatch+
+Terminal=true
+Type=Application
+Categories=Utility;

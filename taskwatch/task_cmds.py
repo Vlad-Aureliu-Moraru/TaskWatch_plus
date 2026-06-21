@@ -54,7 +54,7 @@ def list_tasks(directory_id: int | None = None,
         dir_sql = "DESC" if order_dir.lower() == "desc" else "ASC"
         order_clause = f"ORDER BY {order_by} {dir_sql}"
     else:
-        order_clause = "ORDER BY id"
+        order_clause = "ORDER BY position, id"
 
     sql = f"SELECT * FROM tasks {where} {order_clause}"
     rows = conn.execute(sql, params).fetchall()
@@ -90,15 +90,19 @@ def create_task(
         raise ValueError("repeatable_type is required when repeatable is True")
 
     conn = get_conn()
+    max_pos = conn.execute(
+        "SELECT COALESCE(MAX(position), -1) FROM tasks WHERE directory_id = ?",
+        (directory_id,),
+    ).fetchone()[0]
     cur = conn.execute(
         """INSERT INTO tasks
            (directory_id, name, description, deadline, urgency, difficulty,
             time_dedicated, repeatable, repeatable_type, has_to_be_completed_to_repeat,
-            repeat_on_specific_day)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            repeat_on_specific_day, position)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (directory_id, name, description, deadline, urgency, difficulty,
          time_dedicated, int(repeatable), repeatable_type, int(has_to_be_completed_to_repeat),
-         repeat_on_specific_day),
+         repeat_on_specific_day, max_pos + 1),
     )
     conn.commit()
     return Task(id=cur.lastrowid, directory_id=directory_id, name=name,
@@ -266,6 +270,155 @@ def delete_task(task_id: int) -> bool:
     cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     conn.commit()
     return cur.rowcount > 0
+
+
+def get_tasks_due_on(date_str: str) -> list[Task]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE finished = 0 AND deadline = ?",
+        (date_str,),
+    ).fetchall()
+    return [_row_to_task(r) for r in rows]
+
+
+def get_overdue_tasks() -> list[Task]:
+    today_str = date.today().strftime("%d/%m/%Y")
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM tasks WHERE finished = 0 AND deadline != 'none' AND deadline < ?",
+        (today_str,),
+    ).fetchall()
+    return [_row_to_task(r) for r in rows]
+
+
+def search_tasks_global(query: str) -> list[dict]:
+    conn = get_conn()
+    pattern = f"%{query}%"
+    rows = conn.execute(
+        """SELECT t.*, d.name AS dir_name, a.name AS arch_name
+           FROM tasks t
+           JOIN directories d ON t.directory_id = d.id
+           JOIN archives a ON d.archive_id = a.id
+           WHERE t.name LIKE ?
+           ORDER BY t.deadline""",
+        (pattern,),
+    ).fetchall()
+    result = []
+    for r in rows:
+        task = _row_to_task(r)
+        result.append({
+            "task": task,
+            "dir_name": r["dir_name"],
+            "arch_name": r["arch_name"],
+        })
+    return result
+
+
+def get_tasks_for_week() -> list[dict]:
+    from datetime import timedelta
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    sunday = monday + timedelta(days=6)
+    monday_str = monday.strftime("%d/%m/%Y")
+    sunday_str = sunday.strftime("%d/%m/%Y")
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT t.*, d.name AS dir_name, a.name AS arch_name
+           FROM tasks t
+           JOIN directories d ON t.directory_id = d.id
+           JOIN archives a ON d.archive_id = a.id
+           WHERE t.deadline != 'none' AND t.deadline >= ? AND t.deadline <= ?
+           ORDER BY t.deadline""",
+        (monday_str, sunday_str),
+    ).fetchall()
+    result = []
+    for r in rows:
+        task = _row_to_task(r)
+        result.append({
+            "task": task,
+            "dir_name": r["dir_name"],
+            "arch_name": r["arch_name"],
+        })
+    return result
+
+
+def move_task(task_id: int, new_directory_id: int) -> Task | None:
+    conn = get_conn()
+    dir_exists = conn.execute(
+        "SELECT id FROM directories WHERE id = ?", (new_directory_id,)
+    ).fetchone()
+    if dir_exists is None:
+        return None
+    conn.execute(
+        "UPDATE tasks SET directory_id = ? WHERE id = ?",
+        (new_directory_id, task_id),
+    )
+    conn.commit()
+    return get_task(task_id)
+
+
+def move_task_up(task_id: int) -> bool:
+    conn = get_conn()
+    t = conn.execute("SELECT id, directory_id, position FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if t is None:
+        return False
+    above = conn.execute(
+        "SELECT id, position FROM tasks WHERE directory_id = ? AND position < ? ORDER BY position DESC LIMIT 1",
+        (t["directory_id"], t["position"]),
+    ).fetchone()
+    if above is None:
+        return False
+    conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (above["position"], task_id))
+    conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (t["position"], above["id"]))
+    conn.commit()
+    return True
+
+
+def move_task_down(task_id: int) -> bool:
+    conn = get_conn()
+    t = conn.execute("SELECT id, directory_id, position FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if t is None:
+        return False
+    below = conn.execute(
+        "SELECT id, position FROM tasks WHERE directory_id = ? AND position > ? ORDER BY position ASC LIMIT 1",
+        (t["directory_id"], t["position"]),
+    ).fetchone()
+    if below is None:
+        return False
+    conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (below["position"], task_id))
+    conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (t["position"], below["id"]))
+    conn.commit()
+    return True
+
+
+def list_all_tasks(archive_id: int,
+                   finished: bool | None = None,
+                   order_by: str | None = None,
+                   order_dir: str = "asc") -> list[dict]:
+    conn = get_conn()
+    conditions = ["d.archive_id = ?"]
+    params = [archive_id]
+    if finished is not None:
+        conditions.append("t.finished = ?")
+        params.append(1 if finished else 0)
+    where = "WHERE " + " AND ".join(conditions)
+    if order_by is not None and order_by in VALID_ORDER_COLUMNS:
+        dir_sql = "DESC" if order_dir.lower() == "desc" else "ASC"
+        order_clause = f"ORDER BY t.{order_by} {dir_sql}"
+    else:
+        order_clause = "ORDER BY t.position, t.id"
+    rows = conn.execute(
+        f"""SELECT t.*, d.name AS dir_name
+            FROM tasks t
+            JOIN directories d ON t.directory_id = d.id
+            {where} {order_clause}""",
+        params,
+    ).fetchall()
+    result = []
+    for r in rows:
+        task = _row_to_task(r)
+        result.append({"task": task, "dir_name": r["dir_name"]})
+    return result
 
 
 def _row_to_task(r) -> Task:

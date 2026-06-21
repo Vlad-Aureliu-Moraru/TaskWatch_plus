@@ -38,3 +38,9 @@ class Note:
     task_id: int
     date: str
     note: str
+
+
+@dataclass
+class Tag:
+    id: int
+    name: str

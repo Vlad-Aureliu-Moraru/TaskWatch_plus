@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     finished_date TEXT DEFAULT 'none',
     has_to_be_completed_to_repeat INTEGER DEFAULT 1,
     repeat_on_specific_day TEXT DEFAULT 'none',
+    position INTEGER DEFAULT 0,
     UNIQUE(directory_id, name)
 );
 
@@ -43,6 +44,17 @@ CREATE TABLE IF NOT EXISTS notes (
     task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
     date TEXT NOT NULL,
     note TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS task_tags (
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, tag_id)
 );
 
 PRAGMA foreign_keys = ON;
@@ -56,7 +68,15 @@ def get_conn() -> sqlite3.Connection:
         _connection = sqlite3.connect(str(DB_PATH))
         _connection.row_factory = sqlite3.Row
         _connection.executescript(SCHEMA_SQL)
+        _migrate(_connection)
     return _connection
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("ALTER TABLE tasks ADD COLUMN position INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
 
 
 def close():
