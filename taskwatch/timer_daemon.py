@@ -12,7 +12,7 @@ INACTIVE_DATA = {"text": "", "class": "inactive"}
 
 STATE_PATH = Path.home() / ".local" / "share" / "taskwatch" / "timer_state.json"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-TIMER_FILE_PATH = Path("/tmp/taskwatch_timer.json")
+TIMER_FILE_PATH = Path.home() / ".local" / "share" / "taskwatch" / "timer.json"
 
 
 def _atomic_write(data):
@@ -33,6 +33,7 @@ def _read_state():
 
 def _write_timer_file(remaining: int, segment_idx: int, paused: bool, mode: str):
     try:
+        TIMER_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
         phase = "TIMER" if mode == "simple" else (
             "INTRO" if segment_idx == 0 else
             "WORK" if segment_idx % 2 == 1 else "BREAK"
@@ -54,6 +55,7 @@ def _write_timer_file(remaining: int, segment_idx: int, paused: bool, mode: str)
 
 def _clear_timer_file():
     try:
+        TIMER_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(TIMER_FILE_PATH, "w") as f:
             json.dump(INACTIVE_DATA, f)
     except OSError:

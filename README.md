@@ -48,7 +48,8 @@ Add this custom module to your Waybar config (`~/.config/waybar/config` or `conf
     "format": "{}",
     "tooltip": true,
     "on-click": "taskwatch tui",
-    "on-click-right": "taskwatch timer stop"
+    "on-click-right": "taskwatch timer stop",
+    "on-click-middle": "taskwatch timer pause"
 }
 ```
 

@@ -2516,8 +2516,9 @@ class TaskWatchTUI:
         self._update_clock_display()
 
     def _write_timer_file(self) -> None:
-        timer_path = Path("/tmp/taskwatch_timer.json")
+        timer_path = Path.home() / ".local" / "share" / "taskwatch" / "timer.json"
         try:
+            timer_path.parent.mkdir(parents=True, exist_ok=True)
             if not self._timer_running:
                 data = {"text": "", "class": "inactive"}
             else:

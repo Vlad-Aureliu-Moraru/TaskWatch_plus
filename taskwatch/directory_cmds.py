@@ -33,10 +33,13 @@ def create_directory(archive_id: int, name: str) -> Directory | None:
 
 def rename_directory(directory_id: int, name: str) -> Directory | None:
     conn = get_conn()
-    cur = conn.execute(
-        "UPDATE directories SET name = ? WHERE id = ?", (name, directory_id)
-    )
-    conn.commit()
+    try:
+        cur = conn.execute(
+            "UPDATE directories SET name = ? WHERE id = ?", (name, directory_id)
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        return None
     if cur.rowcount == 0:
         return None
     row = conn.execute("SELECT id, archive_id, name FROM directories WHERE id = ?", (directory_id,)).fetchone()

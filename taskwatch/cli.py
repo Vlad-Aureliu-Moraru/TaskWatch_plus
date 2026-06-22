@@ -1,11 +1,14 @@
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from . import archive_cmds, directory_cmds, io_cmds, note_cmds, tag_cmds, task_cmds, timer
 from .db import close
 
-TIMER_FILE_PATH = Path("/tmp/taskwatch_timer.json")
+DATA_DIR = Path.home() / ".local" / "share" / "taskwatch"
+TIMER_FILE_PATH = DATA_DIR / "timer.json"
+TIMER_STATE_PATH = DATA_DIR / "timer_state.json"
 INACTIVE_DATA = {"text": "", "class": "inactive"}
 
 
@@ -74,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
                     choices=["daily", "weekly", "biweekly", "monthly", "yearly", "none"])
     te.add_argument("--time-dedicated", type=int)
     te.add_argument("--must-complete", dest="has_to_be_completed_to_repeat", type=int)
-    te.add_argument("--repeat-on-day")
+    te.add_argument("--repeat-on-day", dest="repeat_on_specific_day")
 
     tdone = t_sub.add_parser("done")
     tdone.add_argument("id", type=int)
@@ -100,6 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     tm_sub = tm.add_subparsers(dest="action", required=True)
     tms = tm_sub.add_parser("show")
     tms.add_argument("task_id", type=int)
+    tm_sub.add_parser("stop", help="Stop the running timer")
+    tm_sub.add_parser("pause", help="Pause/unpause the running timer")
 
     # ── tag ──
     tg = sub.add_parser("tag")
@@ -303,6 +308,10 @@ def _handle_timer(action: str, opts):
             print(f"Task {opts.task_id} not found", file=sys.stderr)
             sys.exit(1)
         print(timer.format_schedule(task))
+    elif action == "stop":
+        _timer_stop()
+    elif action == "pause":
+        _timer_pause()
 
 
 def _handle_export(opts):
@@ -318,6 +327,44 @@ def _handle_import(opts):
     print(result)
     if "failed" in result:
         sys.exit(1)
+
+
+def _read_timer_state() -> dict:
+    try:
+        with open(TIMER_STATE_PATH) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_timer_state(updates: dict) -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        current = _read_timer_state()
+        current.update(updates)
+        tmp = TIMER_STATE_PATH.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            json.dump(current, f)
+        tmp.rename(TIMER_STATE_PATH)
+    except OSError:
+        pass
+
+
+def _timer_stop() -> None:
+    _write_timer_state({"stopped": True})
+    try:
+        with open(TIMER_FILE_PATH, "w") as f:
+            json.dump(INACTIVE_DATA, f)
+    except OSError:
+        pass
+    print("Timer stopped")
+
+
+def _timer_pause() -> None:
+    state = _read_timer_state()
+    paused = state.get("paused", False)
+    _write_timer_state({"paused": not paused})
+    print("Timer paused" if not paused else "Timer unpaused")
 
 
 def _handle_waybar():

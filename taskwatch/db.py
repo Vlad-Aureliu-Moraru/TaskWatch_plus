@@ -56,8 +56,6 @@ CREATE TABLE IF NOT EXISTS task_tags (
     tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (task_id, tag_id)
 );
-
-PRAGMA foreign_keys = ON;
 """
 
 
@@ -69,6 +67,7 @@ def get_conn() -> sqlite3.Connection:
         _connection.row_factory = sqlite3.Row
         _connection.execute("PRAGMA journal_mode=WAL")
         _connection.executescript(SCHEMA_SQL)
+        _connection.execute("PRAGMA foreign_keys = ON")
         _migrate(_connection)
     return _connection
 
