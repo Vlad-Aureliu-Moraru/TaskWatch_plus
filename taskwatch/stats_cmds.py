@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from .db import get_conn
 
@@ -32,6 +32,13 @@ def compute_stats() -> dict:
     total_time = conn.execute(
         "SELECT COALESCE(SUM(time_dedicated), 0) FROM tasks"
     ).fetchone()[0]
+
+    timer_minutes_today = conn.execute(
+        "SELECT COALESCE(SUM(duration_seconds), 0) FROM timer_sessions WHERE date = ?",
+        (today_str,),
+    ).fetchone()[0] // 60
+
+    focus_score = (today_completed * 10) + timer_minutes_today
 
     completion_pct = round((finished / total * 100) if total else 0)
 
@@ -89,6 +96,8 @@ def compute_stats() -> dict:
             "time_budget": r["time_budget"],
         })
 
+    streak = get_completion_streak()
+
     return {
         "total": total,
         "finished": finished,
@@ -97,6 +106,9 @@ def compute_stats() -> dict:
         "completed_this_week": completed_this_week,
         "overdue": overdue,
         "total_time": total_time,
+        "timer_minutes_today": timer_minutes_today,
+        "focus_score": focus_score,
+        "streak": streak,
         "completion_pct": completion_pct,
         "total_tags": total_tags,
         "ud_grid": ud_grid,
@@ -110,6 +122,54 @@ def compute_stats() -> dict:
         },
         "archive_stats": archive_stats_list,
     }
+
+
+def get_completion_heatmap(weeks: int = 12) -> list[list[int]]:
+    conn = get_conn()
+    today = date.today()
+    start = today - timedelta(weeks=weeks - 1)
+    monday = start - timedelta(days=start.weekday())
+    rows = conn.execute(
+        "SELECT finished_date, COUNT(*) AS c FROM tasks WHERE finished = 1 AND finished_date >= ? GROUP BY finished_date",
+        (monday.isoformat(),),
+    ).fetchall()
+    daily_counts = {r["finished_date"]: r["c"] for r in rows}
+
+    grid: list[list[int]] = [[0] * weeks for _ in range(7)]
+    for col in range(weeks):
+        week_start = monday + timedelta(weeks=col)
+        for day in range(7):
+            d = (week_start + timedelta(days=day)).isoformat()
+            grid[day][col] = daily_counts.get(d, 0)
+    return grid
+
+
+def get_completion_streak() -> int:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT DISTINCT finished_date FROM tasks WHERE finished = 1 AND finished_date != 'none' ORDER BY finished_date DESC"
+    ).fetchall()
+    dates = [r["finished_date"] for r in rows]
+    if not dates:
+        return 0
+
+    today = date.today().isoformat()
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+
+    if dates[0] == today:
+        start = today
+    elif dates[0] == yesterday:
+        start = yesterday
+    else:
+        return 0
+
+    streak = 0
+    cur = datetime.strptime(start, "%Y-%m-%d").date()
+    date_set = set(dates)
+    while cur.isoformat() in date_set:
+        streak += 1
+        cur -= timedelta(days=1)
+    return streak
 
 
 def directory_stats(directory_id: int) -> tuple[int, int]:

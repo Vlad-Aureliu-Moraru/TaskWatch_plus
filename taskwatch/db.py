@@ -56,6 +56,27 @@ CREATE TABLE IF NOT EXISTS task_tags (
     tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
     PRIMARY KEY (task_id, tag_id)
 );
+
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    depends_on_task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, depends_on_task_id)
+);
+
+CREATE TABLE IF NOT EXISTS subtasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    finished INTEGER DEFAULT 0,
+    position INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS timer_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+    duration_seconds INTEGER NOT NULL,
+    date TEXT NOT NULL
+);
 """
 
 
@@ -75,6 +96,10 @@ def get_conn() -> sqlite3.Connection:
 def _migrate(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("ALTER TABLE tasks ADD COLUMN position INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE tasks ADD COLUMN pinned INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
     _migrate_notes(conn)

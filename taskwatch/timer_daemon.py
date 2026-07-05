@@ -90,6 +90,17 @@ def _mark_done(task_id: int):
         logger.exception("Failed to mark task %s done: %s", task_id, e)
 
 
+def _log_session(task_id: int | None, duration_seconds: int):
+    if task_id is None:
+        return
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT))
+        from taskwatch.timer_sessions import log_session  # noqa: PLC0415
+        log_session(task_id, duration_seconds)
+    except Exception as e:
+        logger.warning("Failed to log timer session: %s", e)
+
+
 def run_simple(total_seconds: int, minutes: int, state):
     start_time = state.get("start_time", time.time())
     pause_elapsed = state.get("pause_elapsed", 0.0)
@@ -133,6 +144,7 @@ def run_simple(total_seconds: int, minutes: int, state):
         _write_timer_file(int(round(remaining)), 0, paused, "simple")
 
         if remaining <= 0:
+            _log_session(None, total_seconds)
             _notify(f"{minutes}-minute timer ({int(total_seconds // 60)}m)")
             _atomic_write({"running": False})
             _clear_timer_file()
@@ -203,6 +215,7 @@ def run_scheduled(schedule: dict, task_id: int, task_name: str, total_seconds: i
         _write_timer_file(seg_remaining, seg_idx, paused, "scheduled")
 
         if seg_idx >= len(segments):
+            _log_session(task_id, total_seconds)
             _mark_done(task_id)
             _notify(f"{task_name} ({int(total_seconds // 60)}m)")
             _atomic_write({"running": False})

@@ -31,6 +31,7 @@ class Task:
     has_to_be_completed_to_repeat: bool = True
     repeat_on_specific_day: str = "none"
     position: int = 0
+    pinned: bool = False
 
 
 @dataclass
@@ -47,3 +48,12 @@ class Note:
 class Tag:
     id: int
     name: str
+
+
+@dataclass
+class Subtask:
+    id: int
+    task_id: int
+    content: str
+    finished: bool = False
+    position: int = 0

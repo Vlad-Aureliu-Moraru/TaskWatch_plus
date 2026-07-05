@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import os
 import queue
 import shutil
@@ -40,8 +41,10 @@ from . import (
     io_cmds,
     note_cmds,
     stats_cmds,
+    subtask_cmds,
     tag_cmds,
     task_cmds,
+    timer_sessions,
     undo_cmds,
 )
 from . import db as db_mod
@@ -76,6 +79,7 @@ PALETTE = [
     ("c4", "light red", "default"),
     ("c5", "dark red", "default"),
     ("done_dir", "dark blue", "default"),
+    ("search_highlight", "black, bold", "yellow"),
 ]
 
 _HIGHLIGHT_COLORS: list[tuple[str, str]] = [
@@ -117,6 +121,22 @@ COMMANDS = [
     "export", "import ", "overdue", "schbar", "ai", "aii", "highlight",
     "bm", "bd", "bt ", "bv ", "bc", "y", "sound", "sound on", "sound off",
     "sound work ", "sound break ", "sound done ",
+    "pin", "unpin", "depends ", "undepends ",
+    "subadd ", "subrm ", "subdone ", "subedit ",
+    "snooze ", "dup", "standup", "select ",
+]
+
+CELEBRATION_MESSAGES = [
+    "Crushed it!",
+    "Another one down!",
+    "Nice work!",
+    "Boom! \u2705",
+    "Task slain!",
+    "Nailed it!",
+    "Productivity unlocked!",
+    "Progress!",
+    "You're on fire!",
+    "Done and dusted!",
 ]
 
 HELP_TEXT = (
@@ -143,6 +163,7 @@ HELP_TEXT = (
     "  Space                 Toggle bulk selection (task list)\n\n"
     "Search:\n"
     "  /                    Search items in list (type text, Enter to apply, Esc to clear)\n"
+    "  //                   Global fuzzy search (tasks, directories, tags)\n"
     "  :gs <text>           Global search tasks across all archives\n"
     "  :all                 Show all tasks in current archive\n\n"
     "Move:\n"
@@ -181,6 +202,25 @@ HELP_TEXT = (
     "                       (task: details+notes, dir: all tasks, archive: all dirs+tasks)\n"
     "                       (bulk-select tasks with Space first to copy all selected)\n\n"
     "Timer:\n"
+    "  :st <minutes|preset>   Start countdown timer (or preset name like \"pomodoro\")\n"
+    "  :snooze <days>        Postpone selected task's deadline by N days\n"
+    "  :dup                  Duplicate selected task\n\n"
+    "Pinning & Dependencies:\n"
+    "  :pin                  Pin selected task to top\n"
+    "  :unpin                Unpin selected task\n"
+    "  :depends <id>         Selected task depends on task <id>\n"
+    "  :undepends <id>       Remove dependency on task <id>\n\n"
+    "Subtasks:\n"
+    "  :subadd <content>     Add subtask to selected task\n"
+    "  :subrm <#>            Delete the Nth subtask\n"
+    "  :subdone <#>          Toggle the Nth subtask\n"
+    "  :subedit <#> <text>   Edit the Nth subtask's content\n\n"
+    "Bulk Smart Select:\n"
+    "  :select overdue        Select all overdue tasks\n"
+    "  :select due today      Select all tasks due today\n"
+    "  :select pinned         Select all pinned tasks\n\n"
+    "Standup:\n"
+    "  :standup              Show yesterday's completed tasks as markdown\n\n"
     "  :st <minutes>          Start countdown timer\n"
     "  :ts | :timerStop      Stop timer\n"
     "  :pt | :pauseTimer     Pause / unpause timer\n"
@@ -452,6 +492,10 @@ class CommandEdit(Edit):
             if key == "enter":
                 self._app._apply_search()
                 return None
+            if key == "/" and not self.get_edit_text():
+                self._app._exit_search_mode()
+                self._app._open_global_search()
+                return None
             result = super().keypress(size, key)
             self._app._on_search_change(self.get_edit_text())
             return result
@@ -703,6 +747,8 @@ class TaskWatchTUI:
         self._cmd_history_index: int = -1
         self._edit_ctx: dict | None = None
         self._help_overlay = None
+        self._global_search_overlay = None
+        self._prev_overlay = None
         self._current_items: list | None = None
 
         self._timer_running = False
@@ -731,6 +777,7 @@ class TaskWatchTUI:
         self._caption_alarm_handle: object | None = None
         self._current_prompt: str | tuple = ("standout", "\u276f ")
         self._highlight_color: str = "default"
+        self._timer_presets: dict[str, int] = {}
         self._ai_inbox: queue.Queue = queue.Queue()
         self._ai_chat_widget: ai_chat.AIChatWidget | None = None
         cfg_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
@@ -763,6 +810,14 @@ class TaskWatchTUI:
                         p = line.split(":", 1)[1].strip()
                         if p:
                             self._sound_paths["done"] = Path(p)
+                    elif line.startswith("TIMER_PRESET:"):
+                        _, rest = line.split(":", 1)
+                        if "=" in rest:
+                            name, mins = rest.split("=", 1)
+                            try:
+                                self._timer_presets[name.strip()] = int(mins)
+                            except ValueError:
+                                pass
         except OSError:
             pass
 
@@ -923,10 +978,17 @@ class TaskWatchTUI:
                     ids,
                 ):
                     task_tags.setdefault(row["task_id"], []).append(row["name"])
+            blocked_ids: set[int] = set()
+            for t in items:
+                if not t.finished and task_cmds.is_blocked(t.id):
+                    blocked_ids.add(t.id)
+
             pairs: list[tuple[str, str, str]] = []
             for t in items:
                 sel = "[x]" if t.id in self._bulk_selection else " "
                 prefix = "\u2713 " if t.finished else f"\u25cb{sel} "
+                pin_icon = "\U0001f4cc " if t.pinned else ""
+                block_icon = "\U0001f512 " if t.id in blocked_ids else ""
                 cnt = note_counts.get(t.id, 0)
                 tags = task_tags.get(t.id, [])
                 tag_str = f" [{','.join(tags)}]" if tags else ""
@@ -934,15 +996,18 @@ class TaskWatchTUI:
                 right = f"[{cnt}]{tag_str}{dir_str}"
                 selected = t.id in self._bulk_selection
                 if t.finished:
-                    left = prefix + f"\ueebf {t.name}"
+                    left = pin_icon + prefix + f"\ueebf {t.name}"
                     pairs.append((left, right, "dim"))
                 elif selected:
-                    left = prefix + f"\ueebf {t.name}"
+                    left = pin_icon + prefix + f"\ueebf {t.name}"
                     pairs.append((left, right, "focus"))
+                elif t.id in blocked_ids:
+                    left = pin_icon + prefix + f"\ueebf {t.name}"
+                    pairs.append((left, right, "dim"))
                 else:
                     left = [
-                        (_level_color(t.urgency), prefix),
-                        (_level_color(t.difficulty), f"\ueebf {t.name}"),
+                        (_level_color(t.urgency), pin_icon + prefix),
+                        (_level_color(t.difficulty), f"{block_icon}\ueebf {t.name}"),
                     ]
                     pairs.append((left, right, "default"))
             if pairs:
@@ -1000,13 +1065,13 @@ class TaskWatchTUI:
         if self._level == Level.ARCHIVES:
             a = self._current_items[idx]
             self._set_detail(
-                [("head", f"\uf187 {a.name}"), "\n\nPress Enter to browse directories."],
+                [("head", f"\uf187 {a.name}"), ("dim", f" (id: {a.id})"), "\n\nPress Enter to browse directories."],
             )
 
         elif self._level == Level.DIRECTORIES:
             d = self._current_items[idx]
             self._set_detail(
-                [("head", f"\uf4d3 {d.name}"), "\n\nPress Enter to browse tasks."],
+                [("head", f"\uf4d3 {d.name}"), ("dim", f" (id: {d.id})"), "\n\nPress Enter to browse tasks."],
             )
 
         elif self._level == Level.TASKS:
@@ -1018,6 +1083,8 @@ class TaskWatchTUI:
         elif self._level == Level.NOTES:
             n = self._current_items[idx]
             lines: list[str | list] = []
+            lines.append([("dim", f"Note #{n.id}")])
+            lines.append("")
             if n.note:
                 for line in n.note.split("\n"):
                     lines.append(line)
@@ -1046,6 +1113,7 @@ class TaskWatchTUI:
         s = timer_mod.compute_schedule(task)
 
         status = "\u2713 Done" if task.finished else "\u25cb Pending"
+        pinned_str = "\U0001f4cc Pinned" if task.pinned else "\u2014"
         deadline = task_cmds._display_date(task.deadline)
         if task.repeatable:
             day_str = task.repeat_on_specific_day
@@ -1058,16 +1126,44 @@ class TaskWatchTUI:
         self._detail_walker.clear()
 
         # Header
-        self._detail_walker.append(Text([("head", f"\ueebf {task.name}")]))
+        self._detail_walker.append(Text([("head", f"\ueebf {task.name}"), ("dim", f" (id: {task.id})")]))
         self._detail_walker.append(Text(""))
 
         # Status block
         self._detail_walker.append(Text([
+            ("head", "Pinned: "), pinned_str,
+        ]))
+        self._detail_walker.append(Text([
             ("head", "Status: "), ("done" if task.finished else "default", status),
         ]))
-        self._detail_walker.append(Text([("head", "Deadline: "), deadline]))
+        rel = task_cmds.relative_deadline(task.deadline)
+        dl_text = f"{rel} \u00b7 {deadline}" if rel else deadline
+        self._detail_walker.append(Text([("head", "Deadline: "), dl_text]))
         self._detail_walker.append(Text([("head", "Repeat: "), repeat]))
         self._detail_walker.append(Text([("head", "Finished: "), fd]))
+        self._detail_walker.append(Text(""))
+
+        # Dependencies
+        dep_ids = task_cmds.get_dependencies(task.id)
+        if dep_ids:
+            dep_names = []
+            for did in dep_ids:
+                dt = task_cmds.get_task(did)
+                dep_names.append(f"#{did} {dt.name}" if dt else f"#{did}")
+            self._detail_walker.append(Text([
+                ("head", "Depends on: "), ", ".join(dep_names),
+            ]))
+        else:
+            self._detail_walker.append(Text([("head", "Depends on: "), "\u2014"]))
+        dependent_ids = task_cmds.get_dependents(task.id)
+        if dependent_ids:
+            dep_names = []
+            for did in dependent_ids:
+                dt = task_cmds.get_task(did)
+                dep_names.append(f"#{did} {dt.name}" if dt else f"#{did}")
+            self._detail_walker.append(Text([
+                ("head", "Blocks: "), ", ".join(dep_names),
+            ]))
         self._detail_walker.append(Text(""))
 
         # Urgency / Difficulty / Time budget
@@ -1080,6 +1176,13 @@ class TaskWatchTUI:
         self._detail_walker.append(Text([
             ("head", "Time budget: "), f"{task.time_dedicated} min",
         ]))
+        time_spent = timer_sessions.get_total_time_for_task(task.id)
+        if time_spent:
+            h, m = divmod(time_spent // 60, 60)
+            spent_str = f"{h}h{m:02d}m" if h else f"{m}m"
+            self._detail_walker.append(Text([
+                ("head", "Time spent: "), spent_str,
+            ]))
         self._detail_walker.append(Text(""))
 
         # Tags
@@ -1095,6 +1198,18 @@ class TaskWatchTUI:
         # Description
         if task.description:
             self._detail_walker.append(Text(task.description))
+            self._detail_walker.append(Text(""))
+
+        # Subtasks
+        subs = subtask_cmds.list_subtasks(task.id)
+        if subs:
+            self._detail_walker.append(Text([("head", "Subtasks:")]))
+            for i, sub in enumerate(subs, 1):
+                check = "\u2713" if sub.finished else "\u25cb"
+                attr = "dim" if sub.finished else "default"
+                self._detail_walker.append(Text([
+                    (attr, f"  {check} {i}. {sub.content}"),
+                ]))
             self._detail_walker.append(Text(""))
 
         # Pomodoro schedule
@@ -1241,6 +1356,187 @@ class TaskWatchTUI:
             return
         if cmd == "y":
             self._cmd_copy()
+            return
+        if cmd == "pin":
+            if self._level == Level.TASKS:
+                sid = self._get_selected_id()
+                if sid is not None:
+                    task_cmds.edit_task(sid, pinned=1)
+                    self._set_timed_caption("done", "Task pinned ")
+                    self._refresh_list()
+                    self._show_detail()
+            return
+        if cmd == "unpin":
+            if self._level == Level.TASKS:
+                sid = self._get_selected_id()
+                if sid is not None:
+                    task_cmds.edit_task(sid, pinned=0)
+                    self._set_timed_caption("done", "Task unpinned ")
+                    self._refresh_list()
+                    self._show_detail()
+            return
+        if cmd.startswith("depends "):
+            if self._level == Level.TASKS:
+                sid = self._get_selected_id()
+                if sid is not None:
+                    try:
+                        dep_id = int(cmd.split(" ", 1)[1])
+                        task_cmds.add_dependency(sid, dep_id)
+                        self._set_timed_caption("done", f"Dependency on task {dep_id} added ")
+                        self._refresh_list()
+                        self._show_detail()
+                    except ValueError as e:
+                        self._set_timed_caption("error", f"{e} ")
+            return
+        if cmd.startswith("undepends "):
+            if self._level == Level.TASKS:
+                sid = self._get_selected_id()
+                if sid is not None:
+                    try:
+                        dep_id = int(cmd.split(" ", 1)[1])
+                        if task_cmds.remove_dependency(sid, dep_id):
+                            self._set_timed_caption("done", f"Dependency on task {dep_id} removed ")
+                        else:
+                            self._set_timed_caption("error", "Dependency not found ")
+                    except ValueError:
+                        pass
+                    self._refresh_list()
+                    self._show_detail()
+            return
+        if cmd.startswith("subadd "):
+            if self._level == Level.TASKS:
+                sid = self._get_selected_id()
+                if sid is not None:
+                    content = cmd.split(" ", 1)[1].strip()
+                    if content:
+                        subtask_cmds.create_subtask(sid, content)
+                        self._set_timed_caption("done", "Subtask added ")
+                        self._show_detail()
+            return
+        if cmd.startswith("subrm "):
+            if self._level == Level.TASKS:
+                sid = self._get_selected_id()
+                if sid is not None:
+                    try:
+                        nth = int(cmd.split(" ", 1)[1])
+                        subs = subtask_cmds.list_subtasks(sid)
+                        if 1 <= nth <= len(subs):
+                            sub = subs[nth - 1]
+                            subtask_cmds.delete_subtask(sub.id)
+                            self._set_timed_caption("done", f"Subtask {nth} removed ")
+                            self._show_detail()
+                        else:
+                            self._set_timed_caption("error", f"Subtask #{nth} not found ")
+                    except ValueError:
+                        pass
+            return
+        if cmd.startswith("subdone "):
+            if self._level == Level.TASKS:
+                sid = self._get_selected_id()
+                if sid is not None:
+                    try:
+                        nth = int(cmd.split(" ", 1)[1])
+                        subs = subtask_cmds.list_subtasks(sid)
+                        if 1 <= nth <= len(subs):
+                            sub = subs[nth - 1]
+                            if sub.finished:
+                                subtask_cmds.mark_not_done(sub.id)
+                            else:
+                                subtask_cmds.mark_done(sub.id)
+                            self._set_timed_caption("done", f"Subtask {nth} toggled ")
+                            self._show_detail()
+                        else:
+                            self._set_timed_caption("error", f"Subtask #{nth} not found ")
+                    except ValueError:
+                        pass
+            return
+        if cmd.startswith("subedit "):
+            if self._level == Level.TASKS:
+                sid = self._get_selected_id()
+                if sid is not None:
+                    rest = cmd[len("subedit "):].strip()
+                    space_idx = rest.find(" ")
+                    if space_idx > 0:
+                        try:
+                            nth = int(rest[:space_idx])
+                            new_content = rest[space_idx + 1:]
+                            subs = subtask_cmds.list_subtasks(sid)
+                            if 1 <= nth <= len(subs):
+                                subtask_cmds.update_subtask(subs[nth - 1].id, new_content)
+                                self._set_timed_caption("done", f"Subtask {nth} updated ")
+                                self._show_detail()
+                            else:
+                                self._set_timed_caption("error", f"Subtask #{nth} not found ")
+                        except ValueError:
+                            self._set_timed_caption("error", "Usage: subedit <#> <new content> ")
+                    else:
+                        self._set_timed_caption("error", "Usage: subedit <#> <new content> ")
+            return
+        if cmd.startswith("snooze "):
+            if self._level == Level.TASKS:
+                sid = self._get_selected_id()
+                if sid is not None:
+                    try:
+                        days = int(cmd.split(" ", 1)[1])
+                        task = task_cmds.get_task(sid)
+                        if task and task.deadline != "none":
+                            from datetime import datetime, timedelta
+                            new_deadline = (datetime.strptime(task.deadline, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
+                            task_cmds.edit_task(sid, deadline=new_deadline)
+                            self._set_timed_caption("done", f"Deadline bumped {days}d ")
+                        else:
+                            self._set_timed_caption("error", "Task has no deadline ")
+                    except ValueError:
+                        pass
+                    self._refresh_list()
+                    self._show_detail()
+            return
+        if cmd == "dup":
+            if self._level == Level.TASKS:
+                sid = self._get_selected_id()
+                if sid is not None:
+                    task = task_cmds.get_task(sid)
+                    if task:
+                        task_cmds.create_task(
+                            task.directory_id, task.name + " (copy)",
+                            description=task.description, deadline=task.deadline,
+                            urgency=task.urgency, difficulty=task.difficulty,
+                            time_dedicated=task.time_dedicated,
+                            repeatable=task.repeatable, repeatable_type=task.repeatable_type,
+                            has_to_be_completed_to_repeat=task.has_to_be_completed_to_repeat,
+                            repeat_on_specific_day=task.repeat_on_specific_day,
+                        )
+                        self._set_timed_caption("done", "Task duplicated ")
+                        self._refresh_list()
+            return
+        if cmd.startswith("select "):
+            if self._level == Level.TASKS:
+                arg = cmd.split(" ", 1)[1].strip() if " " in cmd else ""
+                conn = db_mod.get_conn()
+                today_str = date.today().isoformat()
+                if arg == "overdue":
+                    rows = conn.execute(
+                        "SELECT id FROM tasks WHERE finished = 0 AND deadline != 'none' AND deadline < ?",
+                        (today_str,),
+                    ).fetchall()
+                elif arg == "due today":
+                    rows = conn.execute(
+                        "SELECT id FROM tasks WHERE finished = 0 AND deadline = ?",
+                        (today_str,),
+                    ).fetchall()
+                elif arg == "pinned":
+                    rows = conn.execute(
+                        "SELECT id FROM tasks WHERE pinned = 1",
+                    ).fetchall()
+                else:
+                    self._set_timed_caption("error", "Usage: select overdue | due today | pinned ")
+                    return
+                self._bulk_selection = {r["id"] for r in rows}
+                self._set_timed_caption("done", f"Selected {len(self._bulk_selection)} tasks ")
+                self._refresh_list()
+            return
+        if cmd == "standup":
+            self._show_standup()
             return
         if cmd in ("c", "cancel"):
             self._prompt_handler = None
@@ -1449,12 +1745,18 @@ class TaskWatchTUI:
                     self._start_timer_for_task(t)
             return
         if cmd.startswith("st "):
-            try:
-                mins = int(cmd.split(" ", 1)[1])
+            arg = cmd.split(" ", 1)[1]
+            if arg in self._timer_presets:
+                mins = self._timer_presets[arg]
                 if mins > 0:
                     self._start_timer(mins)
-            except ValueError:
-                pass
+            else:
+                try:
+                    mins = int(arg)
+                    if mins > 0:
+                        self._start_timer(mins)
+                except ValueError:
+                    self._set_timed_caption("error", f"Unknown preset '{arg}' ")
             return
         if cmd in ("ts", "timerStop"):
             self._stop_timer()
@@ -1558,14 +1860,22 @@ class TaskWatchTUI:
 
     def _wiz_task_description(self, name: str, desc: str) -> None:
         self._wiz_desc = desc.strip()
+        dir_id = self._selected_directory_id
+        if dir_id is not None:
+            defaults = directory_cmds.get_directory_defaults(dir_id)
+            self._wiz_dir_def_u = defaults["urgency"]
+            self._wiz_dir_def_d = defaults["difficulty"]
+        else:
+            self._wiz_dir_def_u = 1
+            self._wiz_dir_def_d = 1
         self._start_wizard(
-            "Urgency 1-5 (step 3): ",
+            f"Urgency 1-5 [default {self._wiz_dir_def_u}] (step 3): ",
             partial(self._wiz_task_urgency, name),
         )
 
     def _wiz_task_urgency(self, name: str, urgency_str: str) -> None:
         if not urgency_str:
-            urgency = 1
+            urgency = self._wiz_dir_def_u
         else:
             try:
                 urgency = int(urgency_str)
@@ -1573,12 +1883,12 @@ class TaskWatchTUI:
                     raise ValueError
             except ValueError:
                 self._start_wizard(
-                    "Urgency 1-5 (step 3): ",
+                    f"Urgency 1-5 [default {self._wiz_dir_def_u}] (step 3): ",
                     partial(self._wiz_task_urgency, name),
                 )
                 return
         self._start_wizard(
-            "Difficulty 1-5 (step 4): ",
+            f"Difficulty 1-5 [default {self._wiz_dir_def_d}] (step 4): ",
             partial(self._wiz_task_difficulty, name, urgency),
         )
 
@@ -1586,7 +1896,7 @@ class TaskWatchTUI:
         self, name: str, urgency: int, diff_str: str
     ) -> None:
         if not diff_str:
-            difficulty = 1
+            difficulty = self._wiz_dir_def_d
         else:
             try:
                 difficulty = int(diff_str)
@@ -1594,7 +1904,7 @@ class TaskWatchTUI:
                     raise ValueError
             except ValueError:
                 self._start_wizard(
-                    "Difficulty 1-5 (step 4): ",
+                    f"Difficulty 1-5 [default {self._wiz_dir_def_d}] (step 4): ",
                     partial(self._wiz_task_difficulty, name, urgency),
                 )
                 return
@@ -1622,7 +1932,7 @@ class TaskWatchTUI:
                 )
                 return
         self._start_wizard(
-            "Deadline dd/MM/yyyy or 'none' (step 6): ",
+            "Deadline (dd/MM/yyyy, tomorrow, next week...) or 'none' (step 6): ",
             partial(
                 self._wiz_task_deadline,
                 name,
@@ -1644,10 +1954,10 @@ class TaskWatchTUI:
             deadline = "none"
         if deadline != "none":
             try:
-                datetime.strptime(deadline, "%d/%m/%Y")
+                task_cmds._normalize_date(deadline)
             except ValueError:
                 self._start_wizard(
-                    "Deadline dd/MM/yyyy or 'none' (step 6): ",
+                    "Deadline (dd/MM/yyyy, tomorrow, next week...) or 'none' (step 6): ",
                     partial(
                         self._wiz_task_deadline,
                         name,
@@ -2053,8 +2363,7 @@ class TaskWatchTUI:
         if deadline and deadline != self._edit_ctx["deadline"]:
             if deadline != "none":
                 try:
-                    datetime.strptime(deadline, "%d/%m/%Y")
-                    self._edit_ctx["deadline"] = deadline
+                    self._edit_ctx["deadline"] = task_cmds._normalize_date(deadline)
                 except ValueError:
                     pass
             else:
@@ -2163,12 +2472,19 @@ class TaskWatchTUI:
         task = task_cmds.get_task(sid)
         if not task:
             return
+        if not task.finished and task_cmds.is_blocked(sid):
+            self._set_timed_caption("error", "Blocked by unfinished dependencies ")
+            return
         if task.finished:
             undo_cmds.push("task_unfinish", {"task_id": sid})
             task_cmds.mark_not_done(sid)
         else:
             undo_cmds.push("task_finish", {"task_id": sid})
             task_cmds.mark_done(sid)
+            phrase = random.choice(CELEBRATION_MESSAGES)
+            streak = stats_cmds.get_completion_streak()
+            suffix = f" \U0001f525 {streak}d" if streak > 1 else ""
+            self._set_timed_caption("done", f"{phrase}{suffix} ")
         self._refresh_list()
         self._show_detail()
 
@@ -2219,7 +2535,85 @@ class TaskWatchTUI:
         self._cmd.set_edit_text(completed)
         self._cmd.set_edit_pos(len(completed))
 
+    def _open_global_search(self) -> None:
+        overlay = GlobalSearchOverlay(self)
+        self._global_search_overlay = Overlay(
+            overlay,
+            self._frame,
+            align="center",
+            width=("relative", 70),
+            valign="middle",
+            height=("relative", 70),
+        )
+        self._loop.widget = self._global_search_overlay
+
+    def _close_global_search(self) -> None:
+        self._global_search_overlay = None
+        self._loop.widget = self._frame
+
+    def _navigate_from_search(self, result_data: tuple) -> None:
+        kind, item_id, extra = result_data
+        self._close_global_search()
+        if kind == "task":
+            task = task_cmds.get_task(item_id)
+            if task is None:
+                return
+            d = directory_cmds.get_directory(task.directory_id)
+            if d is None:
+                return
+            self._selected_archive_id = d.archive_id
+            self._selected_archive_name = None
+            self._selected_directory_id = d.id
+            self._selected_directory_name = d.name
+            self._all_tasks_mode = False
+            self._filter_tag = None
+            self._level = Level.TASKS
+            self._refresh_list()
+            for idx, t in enumerate(self._current_items or []):
+                if t.id == task.id:
+                    self._list_box.focus_position = idx
+                    break
+        elif kind == "directory":
+            d = directory_cmds.get_directory(item_id)
+            if d is None:
+                return
+            self._selected_archive_id = d.archive_id
+            self._selected_archive_name = None
+            self._selected_directory_id = d.id
+            self._selected_directory_name = d.name
+            self._all_tasks_mode = False
+            self._filter_tag = None
+            self._level = Level.TASKS
+            self._refresh_list()
+        elif kind == "tag":
+            self._filter_tag = extra
+            if self._level != Level.TASKS:
+                self._level = Level.TASKS
+            self._refresh_list()
+
     def _show_help(self) -> None:
+        if self._loop.widget is not self._frame:
+            self._prev_overlay = self._loop.widget
+            ctx_lines: list[str] = []
+            ctx_lines.append("TaskWatch+ Help\n")
+            if self._global_search_overlay is not None:
+                ctx_lines.append("Global Search:\n")
+                ctx_lines.append("  ↑/↓          Navigate results\n")
+                ctx_lines.append("  Enter        Jump to result\n")
+                ctx_lines.append("  Esc          Close search\n")
+                ctx_lines.append("  ?            This help\n")
+            else:
+                ctx_lines.append("Press esc/q to close.\n")
+            ctx_lines.append("\n  Press any key to close.")
+            ctx_w = LineBox(SelectableText("\n".join(ctx_lines)))
+            self._help_overlay = Overlay(
+                ctx_w, self._loop.widget,
+                align="center", width=("relative", 60),
+                valign="middle", height=("relative", 40),
+            )
+            self._loop.widget = self._help_overlay
+            return
+
         help_w = LineBox(VimListBox(SimpleFocusListWalker([SelectableText(HELP_TEXT)])))
         self._help_overlay = Overlay(
             help_w,
@@ -2256,6 +2650,7 @@ class TaskWatchTUI:
             ("dim", "  Pending "), str(s["pending"]),
             ("dim", "  Time "), f"{th}h{tm:02d}m",
             ("dim", "  Tags "), str(s["total_tags"]),
+            ("dim", "  Focus "), str(s["focus_score"]),
         ])
 
         # ── Completion (smooth horizontal-block bar, gradient colour) ──
@@ -2264,6 +2659,7 @@ class TaskWatchTUI:
              f"  {s['completion_pct']:>3}%"])
 
         # ── Status (inline, semantic colours) ──
+        streak_str = f" \U0001f525 {s['streak']}" if s["streak"] > 0 else ""
         add([
             ("head", "  \u25b8 Status    "),
             ("error", f"\u26a0 {s['overdue']:>2}"),
@@ -2271,6 +2667,7 @@ class TaskWatchTUI:
             ("warn", f"\u2713 today {s['today_completed']:>2}"),
             ("dim", "  "),
             ("done", f"\u2713 week {s['completed_this_week']:>2}"),
+            ("dim", f"{streak_str}"),
         ])
 
         # ── Deadline timeline (braille bars, semantic colours) ──
@@ -2346,6 +2743,33 @@ class TaskWatchTUI:
                 ])
             if len(dirs) > 10:
                 add([("dim", f"    ... and {len(dirs) - 10} more")])
+
+        # ── Completion heatmap (GitHub-style contribution calendar) ──
+        heatmap = stats_cmds.get_completion_heatmap(12)
+        max_count = max((c for row in heatmap for c in row), default=1)
+        section("Completion Heatmap (last 12 weeks)")
+        day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        for day_idx in range(7):
+            cells: list = [f"    {day_labels[day_idx]}  "]
+            for col in range(12):
+                c = heatmap[day_idx][col]
+                if c == 0:
+                    cells.append(("dim", f"{_BRAILLE_STEPS[0]}  "))
+                else:
+                    intensity = c / max_count
+                    if intensity >= 0.8:
+                        attr = "c5"
+                    elif intensity >= 0.6:
+                        attr = "c4"
+                    elif intensity >= 0.4:
+                        attr = "c3"
+                    elif intensity >= 0.2:
+                        attr = "c2"
+                    else:
+                        attr = "c1"
+                    bstep = _BRAILLE_STEPS[int(round(intensity * 8))]
+                    cells.append((attr, f"{bstep}  "))
+            add(cells)
 
         stats_w = LineBox(VimListBox(SimpleFocusListWalker(walker)))
         self._stats_overlay = Overlay(
@@ -2478,6 +2902,44 @@ class TaskWatchTUI:
             width=("relative", 60),
             valign="middle",
             height=("relative", 70),
+        )
+        self._loop.widget = self._stats_overlay
+
+    def _show_standup(self) -> None:
+        from datetime import timedelta
+
+        yesterday = date.today() - timedelta(days=1)
+        yesterday_str = yesterday.isoformat()
+        conn = db_mod.get_conn()
+        rows = conn.execute(
+            """SELECT t.name, d.name AS dir_name, a.name AS arch_name
+               FROM tasks t
+               JOIN directories d ON t.directory_id = d.id
+               JOIN archives a ON d.archive_id = a.id
+               WHERE t.finished = 1 AND t.finished_date = ?
+               ORDER BY a.name, d.name""",
+            (yesterday_str,),
+        ).fetchall()
+        if not rows:
+            content = "  No tasks completed yesterday."
+        else:
+            lines = [f"  ## Standup — {yesterday.strftime('%d/%m/%Y')}", ""]
+            groups: dict[str, list[str]] = {}
+            for r in rows:
+                arch = r["arch_name"]
+                groups.setdefault(arch, []).append(f"  - {r['name']} ({r['dir_name']})")
+            for arch, items in sorted(groups.items()):
+                lines.append(f"  **{arch}**")
+                lines.extend(items)
+                lines.append("")
+            if lines and not lines[-1]:
+                lines.pop()
+            content = "\n".join(lines)
+        gw = LineBox(VimListBox(SimpleFocusListWalker([SelectableText(content)])))
+        self._stats_overlay = Overlay(
+            gw, self._frame,
+            align="center", width=("relative", 60),
+            valign="middle", height=("relative", 60),
         )
         self._loop.widget = self._stats_overlay
 
@@ -3512,7 +3974,12 @@ class TaskWatchTUI:
     def _unhandled_input(self, key: str) -> None:
         if self._loop.widget is not self._frame:
             if key in ("esc", "q"):
-                self._loop.widget = self._frame
+                if self._help_overlay is not None and self._loop.widget is self._help_overlay:
+                    prev = getattr(self, '_prev_overlay', self._frame) or self._frame
+                    self._loop.widget = prev
+                    self._help_overlay = None
+                else:
+                    self._loop.widget = self._frame
             return
         if key == " " and self._level == Level.TASKS and self._frame.focus_position == "body":
             if self._current_items:
@@ -3531,7 +3998,9 @@ class TaskWatchTUI:
             else:
                 self._select()
             return
-
+        if key == "?":
+            self._show_help()
+            return
 
     def run(self) -> None:
         config_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
@@ -3550,6 +4019,129 @@ class TaskWatchTUI:
         self._loop.set_alarm_in(1, self._tick)
         self._frame.focus_position = "body"
         self._loop.run()
+
+
+def _fuzzy_score(query: str, text: str) -> tuple[int, list[tuple[int, int]]]:
+    if not query or not text:
+        return (0, [])
+    ql = query.lower()
+    tl = text.lower()
+    idx = tl.find(ql)
+    if idx != -1:
+        return (100 + len(ql), [(idx, idx + len(ql))])
+    positions = []
+    i = 0
+    for ch in ql:
+        j = tl.find(ch, i)
+        if j == -1:
+            break
+        positions.append(j)
+        i = j + 1
+    else:
+        spread = positions[-1] - positions[0]
+        score = 50 + max(0, 30 - spread)
+        return (score, [(p, p + 1) for p in positions])
+    return (0, [])
+
+
+def _build_highlighted_text(text: str, query: str) -> list:
+    _, spans = _fuzzy_score(query, text)
+    if not spans:
+        return [("default", text)]
+    result: list = []
+    pos = 0
+    start, end = spans[0]
+    if len(spans) == 1 and end - start == len(query):
+        # contiguous match
+        result.append(("default", text[:start]))
+        result.append(("search_highlight", text[start:end]))
+        result.append(("default", text[end:]))
+    else:
+        # non-contiguous: highlight each char position individually
+        span_set = set()
+        for s, e in spans:
+            for p in range(s, e):
+                span_set.add(p)
+        for i, ch in enumerate(text):
+            if i in span_set:
+                result.append(("search_highlight", ch))
+            else:
+                result.append(("default", ch))
+    return result
+
+
+class GlobalSearchOverlay(WidgetWrap):
+    def __init__(self, app: "TaskWatchTUI"):
+        self._app = app
+        self._edit = Edit("🔍 ")
+        self._walker = SimpleFocusListWalker([])
+        self._listbox = VimListBox(self._walker)
+        urwid.connect_signal(self._edit, 'change', self._on_change)
+        pile = Pile([
+            ("pack", AttrMap(self._edit, "head")),
+            ("weight", 1, self._listbox),
+        ])
+        super().__init__(LineBox(pile, title="Global Search"))
+
+    def _on_change(self, edit: Edit, text: str) -> None:
+        self._run_search(text)
+
+    def _run_search(self, query: str) -> None:
+        self._walker.clear()
+        q = query.strip()
+        if not q:
+            return
+        results: list[tuple[int, urwid.Widget]] = []
+        tasks = task_cmds.search_tasks_global(q)
+        if tasks:
+            results.append((9999, Text([("head", "  Tasks")])))
+            for t, dir_name in tasks:
+                score = _fuzzy_score(q, t.name)[0] + 80
+                label = f"[{dir_name}] {t.name}" if dir_name else t.name
+                highlighted = _build_highlighted_text(label, q)
+                w = AttrMap(SelectableText(highlighted), "default", "focus")
+                w.result_data = ("task", t.id, dir_name)
+                results.append((score, w))
+        dirs = directory_cmds.search_directories_global(q)
+        if dirs:
+            results.append((9999, Text([("head", "  Directories")])))
+            for d in dirs:
+                score = _fuzzy_score(q, d.name)[0]
+                highlighted = _build_highlighted_text(str(d.name), q)
+                w = AttrMap(SelectableText(highlighted), "default", "focus")
+                w.result_data = ("directory", d.id, d.name)
+                results.append((score, w))
+        tags = tag_cmds.search_tags_global(q)
+        if tags:
+            results.append((9999, Text([("head", "  Tags")])))
+            for t in tags:
+                score = _fuzzy_score(q, t.name)[0]
+                tag_text = f"#{t.name}"
+                highlighted = _build_highlighted_text(tag_text, q)
+                w = AttrMap(SelectableText(highlighted), "default", "focus")
+                w.result_data = ("tag", t.id, t.name)
+                results.append((score, w))
+        results.sort(key=lambda x: (0, -x[0]))
+        for _, w in results:
+            self._walker.append(w)
+        if self._walker:
+            self._listbox.focus_position = 0
+
+    def keypress(self, size: tuple[int, int], key: str) -> str | None:
+        if key == "?":
+            self._app._show_help()
+            return None
+        if key == "esc":
+            self._app._close_global_search()
+            return None
+        if key == "enter":
+            idx = self._listbox.focus_position
+            if idx < len(self._walker):
+                w = self._walker[idx]
+                if hasattr(w, 'result_data'):
+                    self._app._navigate_from_search(w.result_data)
+            return None
+        return super().keypress(size, key)
 
 
 class FilePickerWidget(WidgetWrap):

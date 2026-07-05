@@ -67,6 +67,16 @@ def get_tags_for_task(task_id: int) -> list[Tag]:
     return [Tag(id=r["id"], name=r["name"]) for r in rows]
 
 
+def search_tags_global(query: str, limit: int = 10) -> list[Tag]:
+    conn = get_conn()
+    like = f"%{query}%"
+    rows = conn.execute(
+        "SELECT id, name FROM tags WHERE LOWER(name) LIKE LOWER(?) ORDER BY name LIMIT ?",
+        (like, limit),
+    ).fetchall()
+    return [Tag(id=r["id"], name=r["name"]) for r in rows]
+
+
 def get_tasks_by_tag(tag_name: str) -> list[int]:
     conn = get_conn()
     rows = conn.execute(

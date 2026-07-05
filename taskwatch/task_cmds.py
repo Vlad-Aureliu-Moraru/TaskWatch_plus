@@ -8,7 +8,47 @@ from .models import Task
 
 DATE_RE = re.compile(r"^\d{2}/\d{2}/\d{4}$")
 ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+NATURAL_DAY_RE = re.compile(r"^in\s+(\d+)\s+days?\s*$", re.IGNORECASE)
+NATURAL_WEEK_RE = re.compile(r"^in\s+(\d+)\s+weeks?\s*$", re.IGNORECASE)
+WEEKDAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 VALID_REPEAT_TYPES = {"daily", "weekly", "biweekly", "monthly", "yearly", "none"}
+
+
+def parse_natural_date(text: str) -> str | None:
+    t = text.strip().lower()
+    today = date.today()
+
+    if t in ("today", "tdy"):
+        return today.isoformat()
+    if t in ("tomorrow", "tmr", "tmrw"):
+        return (today + timedelta(days=1)).isoformat()
+    if t in ("next week", "nxt wk"):
+        return (today + timedelta(weeks=1)).isoformat()
+    if t in ("next month", "nxt mth"):
+        next_month = today.month + 1
+        year = today.year + (next_month - 1) // 12
+        month = (next_month - 1) % 12 + 1
+        day = min(today.day, calendar.monthrange(year, month)[1])
+        return date(year, month, day).isoformat()
+
+    m = NATURAL_DAY_RE.match(t)
+    if m:
+        return (today + timedelta(days=int(m.group(1)))).isoformat()
+
+    m = NATURAL_WEEK_RE.match(t)
+    if m:
+        return (today + timedelta(weeks=int(m.group(1)))).isoformat()
+
+    if t.startswith("next "):
+        day_name = t[5:].strip()
+        if day_name in WEEKDAY_NAMES:
+            target = WEEKDAY_NAMES.index(day_name)
+            days_ahead = target - today.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            return (today + timedelta(days=days_ahead)).isoformat()
+
+    return None
 
 
 def _clamp(val: int, lo: int, hi: int, name: str) -> int:
@@ -25,7 +65,10 @@ def _normalize_date(val: str) -> str:
         return val
     if DATE_RE.match(val):
         return datetime.strptime(val, "%d/%m/%Y").strftime("%Y-%m-%d")
-    raise ValueError(f"date must be dd/MM/yyyy, yyyy-mm-dd, or 'none', got '{val}'")
+    parsed = parse_natural_date(val)
+    if parsed is not None:
+        return parsed
+    raise ValueError(f"date must be dd/MM/yyyy, yyyy-mm-dd, natural language, or 'none', got '{val}'")
 
 
 def _display_date(val: str) -> str:
@@ -35,6 +78,34 @@ def _display_date(val: str) -> str:
         return datetime.strptime(val, "%Y-%m-%d").strftime("%d/%m/%Y")
     except ValueError:
         return val
+
+
+def relative_deadline(date_str: str) -> str:
+    if date_str in (None, "", "none"):
+        return ""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return ""
+    today = date.today()
+    diff = (dt - today).days
+    if diff < 0:
+        days = abs(diff)
+        if days == 1:
+            return "Overdue by 1 day"
+        return f"Overdue by {days} days"
+    if diff == 0:
+        return "Due today"
+    if diff == 1:
+        return "Due tomorrow"
+    if diff < 7:
+        return f"Due in {diff} days"
+    weeks = diff // 7
+    if diff % 7 == 0:
+        if weeks == 1:
+            return "Due in 1 week"
+        return f"Due in {weeks} weeks"
+    return f"Due in {diff} days"
 
 
 def _validate_repeatable_type(val: str) -> str:
@@ -66,7 +137,7 @@ def list_tasks(directory_id: int | None = None,
         dir_sql = "DESC" if order_dir.lower() == "desc" else "ASC"
         order_clause = f"ORDER BY {order_by} {dir_sql}"
     else:
-        order_clause = "ORDER BY position, id"
+        order_clause = "ORDER BY pinned DESC, position, id"
 
     sql = f"SELECT * FROM tasks {where} {order_clause}"
     rows = conn.execute(sql, params).fetchall()
@@ -91,6 +162,7 @@ def create_task(
     repeatable_type: str = "none",
     has_to_be_completed_to_repeat: bool = True,
     repeat_on_specific_day: str = "none",
+    pinned: bool = False,
 ) -> Task:
     _clamp(urgency, 1, 5, "urgency")
     _clamp(difficulty, 1, 5, "difficulty")
@@ -111,11 +183,11 @@ def create_task(
             """INSERT INTO tasks
                (directory_id, name, description, deadline, urgency, difficulty,
                 time_dedicated, repeatable, repeatable_type, has_to_be_completed_to_repeat,
-                repeat_on_specific_day, position)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                repeat_on_specific_day, position, pinned)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (directory_id, name, description, deadline, urgency, difficulty,
              time_dedicated, int(repeatable), repeatable_type, int(has_to_be_completed_to_repeat),
-             repeat_on_specific_day, max_pos + 1),
+             repeat_on_specific_day, max_pos + 1, int(pinned)),
         )
         conn.commit()
     except sqlite3.IntegrityError:
@@ -125,13 +197,15 @@ def create_task(
                 difficulty=difficulty, time_dedicated=time_dedicated,
                 repeatable=repeatable, repeatable_type=repeatable_type,
                 has_to_be_completed_to_repeat=has_to_be_completed_to_repeat,
-                repeat_on_specific_day=repeat_on_specific_day)
+                repeat_on_specific_day=repeat_on_specific_day,
+                pinned=pinned)
 
 
 def edit_task(task_id: int, **kwargs) -> Task | None:
     allowed = {"name", "description", "deadline", "urgency", "difficulty",
                "repeatable", "finished", "repeatable_type", "time_dedicated",
-               "has_to_be_completed_to_repeat", "repeat_on_specific_day"}
+               "has_to_be_completed_to_repeat", "repeat_on_specific_day",
+               "pinned"}
     updates = {}
     for k, v in kwargs.items():
         if k not in allowed or v is None:
@@ -151,6 +225,8 @@ def edit_task(task_id: int, **kwargs) -> Task | None:
         elif k == "repeatable_type":
             v = _validate_repeatable_type(v)
         elif k == "has_to_be_completed_to_repeat":
+            v = int(v)
+        elif k == "pinned":
             v = int(v)
         updates[k] = v
 
@@ -346,13 +422,80 @@ def delete_task(task_id: int) -> bool:
     return cur.rowcount > 0
 
 
-def get_tasks_due_on(date_str: str) -> list[Task]:
+def _would_create_cycle(task_id: int, depends_on_id: int) -> bool:
+    visited = {task_id}
+    stack = [depends_on_id]
+    while stack:
+        current = stack.pop()
+        if current == task_id:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        for dep_id in get_dependencies(current):
+            stack.append(dep_id)
+    return False
+
+
+def add_dependency(task_id: int, depends_on_id: int) -> bool:
+    if task_id == depends_on_id:
+        raise ValueError("A task cannot depend on itself")
+    if _would_create_cycle(task_id, depends_on_id):
+        raise ValueError("Circular dependency detected")
     conn = get_conn()
-    rows = conn.execute(
-        "SELECT * FROM tasks WHERE finished = 0 AND deadline = ?",
-        (date_str,),
-    ).fetchall()
-    return [_row_to_task(r) for r in rows]
+    try:
+        conn.execute(
+            "INSERT INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)",
+            (task_id, depends_on_id),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def remove_dependency(task_id: int, depends_on_id: int) -> bool:
+    conn = get_conn()
+    cur = conn.execute(
+        "DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_task_id = ?",
+        (task_id, depends_on_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def get_dependencies(task_id: int) -> list[int]:
+    conn = get_conn()
+    return [
+        r["depends_on_task_id"]
+        for r in conn.execute(
+            "SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?",
+            (task_id,),
+        )
+    ]
+
+
+def get_dependents(task_id: int) -> list[int]:
+    conn = get_conn()
+    return [
+        r["task_id"]
+        for r in conn.execute(
+            "SELECT task_id FROM task_dependencies WHERE depends_on_task_id = ?",
+            (task_id,),
+        )
+    ]
+
+
+def is_blocked(task_id: int) -> bool:
+    dep_ids = get_dependencies(task_id)
+    if not dep_ids:
+        return False
+    conn = get_conn()
+    unfinished = conn.execute(
+        f"SELECT COUNT(*) FROM tasks WHERE id IN ({','.join('?' for _ in dep_ids)}) AND finished = 0",
+        dep_ids,
+    ).fetchone()[0]
+    return unfinished > 0
 
 
 def get_overdue_tasks() -> list[Task]:
@@ -479,7 +622,7 @@ def list_all_tasks(archive_id: int,
         dir_sql = "DESC" if order_dir.lower() == "desc" else "ASC"
         order_clause = f"ORDER BY t.{order_by} {dir_sql}"
     else:
-        order_clause = "ORDER BY t.position, t.id"
+        order_clause = "ORDER BY t.pinned DESC, t.position, t.id"
     rows = conn.execute(
         f"""SELECT t.*, d.name AS dir_name
             FROM tasks t
@@ -492,6 +635,21 @@ def list_all_tasks(archive_id: int,
         task = _row_to_task(r)
         result.append({"task": task, "dir_name": r["dir_name"]})
     return result
+
+
+def search_tasks_global(query: str, limit: int = 10) -> list[tuple[Task, str]]:
+    conn = get_conn()
+    like = f"%{query}%"
+    rows = conn.execute("""
+        SELECT DISTINCT t.*, d.name AS dir_name
+        FROM tasks t
+        JOIN directories d ON t.directory_id = d.id
+        WHERE LOWER(t.name) LIKE LOWER(?)
+           OR LOWER(t.description) LIKE LOWER(?)
+        ORDER BY t.pinned DESC, t.position, t.id
+        LIMIT ?
+    """, (like, like, limit)).fetchall()
+    return [(_row_to_task(r), r["dir_name"]) for r in rows]
 
 
 def _row_to_task(r) -> Task:
@@ -511,4 +669,5 @@ def _row_to_task(r) -> Task:
         has_to_be_completed_to_repeat=bool(r["has_to_be_completed_to_repeat"]),
         repeat_on_specific_day=r["repeat_on_specific_day"],
         position=r["position"],
+        pinned=bool(r["pinned"]),
     )

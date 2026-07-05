@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from pathlib import Path
 
 from . import (
     ai_client,
@@ -8,6 +9,7 @@ from . import (
     directory_cmds,
     io_cmds,
     note_cmds,
+    subtask_cmds,
     tag_cmds,
     task_cmds,
     timer,
@@ -57,8 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     tc.add_argument("name")
     tc.add_argument("--description", default="")
     tc.add_argument("--deadline", default="none")
-    tc.add_argument("--urgency", type=int, default=1)
-    tc.add_argument("--difficulty", type=int, default=1)
+    tc.add_argument("--urgency", type=int, default=None)
+    tc.add_argument("--difficulty", type=int, default=None)
     tc.add_argument("--time-dedicated", type=int, default=0)
     tc.add_argument("--repeatable", action="store_true")
     tc.add_argument("--repeatable-type", default="none",
@@ -68,6 +70,18 @@ def build_parser() -> argparse.ArgumentParser:
     tc.add_argument("--no-must-complete", dest="must_complete", action="store_false")
     tc.add_argument("--repeat-on-day", default="none",
                     help="specific day(s) for repeat (e.g. Mon|Wed|Fri)")
+    tc.add_argument("--pinned", action="store_true", default=False,
+                    help="pin task to top of lists")
+
+    td = t_sub.add_parser("depend")
+    td.add_argument("task_id", type=int)
+    td.add_argument("depends_on_id", type=int,
+                    help="task ID that this task depends on (must be finished first)")
+
+    tu = t_sub.add_parser("undepend")
+    tu.add_argument("task_id", type=int)
+    tu.add_argument("depends_on_id", type=int,
+                    help="task ID to remove dependency from")
 
     te = t_sub.add_parser("edit")
     te.add_argument("id", type=int)
@@ -83,6 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
     te.add_argument("--time-dedicated", type=int)
     te.add_argument("--must-complete", dest="has_to_be_completed_to_repeat", type=int)
     te.add_argument("--repeat-on-day", dest="repeat_on_specific_day")
+    te.add_argument("--pinned", type=int,
+                    help="pin to top (1) or unpin (0)")
 
     tdone = t_sub.add_parser("done")
     tdone.add_argument("id", type=int)
@@ -107,6 +123,21 @@ def build_parser() -> argparse.ArgumentParser:
     ne.add_argument("--date", default=None)
     ne.add_argument("--note", default=None)
 
+    # ── subtask ──
+    sb = sub.add_parser("subtask")
+    sb_sub = sb.add_subparsers(dest="action", required=True)
+    sbc = sb_sub.add_parser("create")
+    sbc.add_argument("task_id", type=int)
+    sbc.add_argument("content")
+    sbl = sb_sub.add_parser("list")
+    sbl.add_argument("task_id", type=int)
+    sbd = sb_sub.add_parser("delete")
+    sbd.add_argument("id", type=int)
+    sbdn = sb_sub.add_parser("done")
+    sbdn.add_argument("id", type=int)
+    sbun = sb_sub.add_parser("undone")
+    sbun.add_argument("id", type=int)
+
     # ── timer ──
     tm = sub.add_parser("timer")
     tm_sub = tm.add_subparsers(dest="action", required=True)
@@ -114,6 +145,14 @@ def build_parser() -> argparse.ArgumentParser:
     tms.add_argument("task_id", type=int)
     tm_sub.add_parser("stop", help="Stop the running timer")
     tm_sub.add_parser("pause", help="Pause/unpause the running timer")
+    tmp = tm_sub.add_parser("preset")
+    tmp_sub = tmp.add_subparsers(dest="preset_action", required=True)
+    tmp_sub.add_parser("list")
+    tpa = tmp_sub.add_parser("add")
+    tpa.add_argument("name")
+    tpa.add_argument("minutes", type=int)
+    tpr = tmp_sub.add_parser("remove")
+    tpr.add_argument("name")
 
     # ── tag ──
     tg = sub.add_parser("tag")
@@ -202,6 +241,8 @@ def run(args: list[str] | None = None):
             _handle_task(action, opts)
         elif entity == "note":
             _handle_note(action, opts)
+        elif entity == "subtask":
+            _handle_subtask(action, opts)
         elif entity == "timer":
             _handle_timer(action, opts)
         elif entity == "tag":
@@ -263,11 +304,20 @@ def _handle_task(action: str, opts):
             repeat = f" [repeat:{t.repeatable_type}]" if t.repeatable else ""
             print(f"{t.id}: [{status}] {t.name} (dir {t.directory_id}){repeat}")
     elif action == "create":
+        urgency = opts.urgency
+        difficulty = opts.difficulty
+        if urgency is None or difficulty is None:
+            defaults = directory_cmds.get_directory_defaults(opts.directory_id)
+            if urgency is None:
+                urgency = defaults["urgency"]
+            if difficulty is None:
+                difficulty = defaults["difficulty"]
         t = task_cmds.create_task(
             opts.directory_id, opts.name, opts.description,
-            opts.deadline, opts.urgency, opts.difficulty,
+            opts.deadline, urgency, difficulty,
             opts.time_dedicated, opts.repeatable, opts.repeatable_type,
             opts.must_complete, opts.repeat_on_day,
+            pinned=opts.pinned,
         )
         parts = [f"Created task {t.id}: {t.name}"]
         if t.repeatable:
@@ -275,11 +325,27 @@ def _handle_task(action: str, opts):
         if t.deadline != "none":
             parts.append(f"[deadline:{t.deadline}]")
         print(" ".join(parts))
+    elif action == "depend":
+        try:
+            task_cmds.add_dependency(opts.task_id, opts.depends_on_id)
+            print(f"Task {opts.task_id} now depends on task {opts.depends_on_id}")
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+    elif action == "undepend":
+        if task_cmds.remove_dependency(opts.task_id, opts.depends_on_id):
+            print(f"Removed dependency: task {opts.task_id} no longer depends on task {opts.depends_on_id}")
+        else:
+            print("Dependency not found", file=sys.stderr)
+            sys.exit(1)
+        return
     elif action == "edit":
         kwargs = {k: getattr(opts, k) for k in
                   ["name", "description", "deadline", "urgency", "difficulty",
                    "repeatable", "finished", "repeatable_type", "time_dedicated",
-                   "has_to_be_completed_to_repeat", "repeat_on_specific_day"]
+                   "has_to_be_completed_to_repeat", "repeat_on_specific_day",
+                   "pinned"]
                   if getattr(opts, k) is not None}
         t = task_cmds.edit_task(opts.id, **kwargs)
         if t:
@@ -334,6 +400,69 @@ def _handle_note(action: str, opts):
             sys.exit(1)
 
 
+def _handle_subtask(action: str, opts):
+    if action == "create":
+        s = subtask_cmds.create_subtask(opts.task_id, opts.content)
+        print(f"Created subtask {s.id}: {s.content}")
+    elif action == "list":
+        for s in subtask_cmds.list_subtasks(opts.task_id):
+            status = "✓" if s.finished else " "
+            print(f"{s.id}: [{status}] {s.content}")
+    elif action == "delete":
+        if subtask_cmds.delete_subtask(opts.id):
+            print(f"Deleted subtask {opts.id}")
+        else:
+            print(f"Subtask {opts.id} not found", file=sys.stderr)
+            sys.exit(1)
+    elif action == "done":
+        s = subtask_cmds.mark_done(opts.id)
+        if s:
+            print(f"Marked subtask {s.id} done")
+        else:
+            print(f"Subtask {opts.id} not found", file=sys.stderr)
+            sys.exit(1)
+    elif action == "undone":
+        s = subtask_cmds.mark_not_done(opts.id)
+        if s:
+            print(f"Marked subtask {s.id} not done")
+        else:
+            print(f"Subtask {opts.id} not found", file=sys.stderr)
+            sys.exit(1)
+
+
+_CONFIG_BASE = Path(__file__).resolve().parent.parent / "config"
+
+
+def _read_presets() -> dict[str, int]:
+    presets: dict[str, int] = {}
+    cfg = _CONFIG_BASE / "config.txt"
+    try:
+        for line in cfg.read_text().splitlines():
+            if line.startswith("TIMER_PRESET:"):
+                _, rest = line.split(":", 1)
+                if "=" in rest:
+                    name, mins = rest.split("=", 1)
+                    presets[name.strip()] = int(mins)
+    except (OSError, ValueError):
+        pass
+    return presets
+
+
+def _write_presets(presets: dict[str, int]) -> None:
+    cfg = _CONFIG_BASE / "config.txt"
+    existing_clean: list[str] = []
+    try:
+        for line in cfg.read_text().splitlines():
+            if not line.startswith("TIMER_PRESET:"):
+                existing_clean.append(line)
+    except OSError:
+        pass
+    for name, mins in sorted(presets.items()):
+        existing_clean.append(f"TIMER_PRESET:{name}={mins}")
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("\n".join(existing_clean) + "\n")
+
+
 def _handle_timer(action: str, opts):
     if action == "show":
         task = task_cmds.get_task(opts.task_id)
@@ -345,6 +474,28 @@ def _handle_timer(action: str, opts):
         _timer_stop()
     elif action == "pause":
         _timer_pause()
+    elif action == "preset":
+        if opts.preset_action == "list":
+            presets = _read_presets()
+            if not presets:
+                print("No timer presets configured")
+            else:
+                for name, mins in sorted(presets.items()):
+                    print(f"{name}={mins}m")
+        elif opts.preset_action == "add":
+            presets = _read_presets()
+            presets[opts.name] = opts.minutes
+            _write_presets(presets)
+            print(f"Added preset '{opts.name}={opts.minutes}m'")
+        elif opts.preset_action == "remove":
+            presets = _read_presets()
+            if opts.name in presets:
+                del presets[opts.name]
+                _write_presets(presets)
+                print(f"Removed preset '{opts.name}'")
+            else:
+                print(f"Preset '{opts.name}' not found", file=sys.stderr)
+                sys.exit(1)
 
 
 def _handle_export(opts):

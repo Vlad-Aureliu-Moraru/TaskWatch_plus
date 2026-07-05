@@ -55,6 +55,38 @@ def delete_directory(directory_id: int) -> bool:
     return cur.rowcount > 0
 
 
+def get_directory(dir_id: int) -> Directory | None:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, archive_id, name FROM directories WHERE id = ?", (dir_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return Directory(id=row["id"], archive_id=row["archive_id"], name=row["name"])
+
+
+def get_directory_defaults(directory_id: int) -> dict:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT ROUND(AVG(urgency), 0) AS avg_u, ROUND(AVG(difficulty), 0) AS avg_d "
+        "FROM tasks WHERE directory_id = ?",
+        (directory_id,),
+    ).fetchone()
+    avg_u = int(row["avg_u"]) if row and row["avg_u"] is not None else 1
+    avg_d = int(row["avg_d"]) if row and row["avg_d"] is not None else 1
+    return {"urgency": max(1, min(5, avg_u)), "difficulty": max(1, min(5, avg_d))}
+
+
+def search_directories_global(query: str, limit: int = 10) -> list[Directory]:
+    conn = get_conn()
+    like = f"%{query}%"
+    rows = conn.execute(
+        "SELECT id, archive_id, name FROM directories WHERE LOWER(name) LIKE LOWER(?) ORDER BY name LIMIT ?",
+        (like, limit),
+    ).fetchall()
+    return [Directory(id=r["id"], archive_id=r["archive_id"], name=r["name"]) for r in rows]
+
+
 def move_directory(dir_id: int, new_archive_id: int) -> Directory | None:
     conn = get_conn()
     arch_exists = conn.execute(
