@@ -124,6 +124,7 @@ COMMANDS = [
     "pin", "unpin", "depends ", "undepends ",
     "subadd ", "subrm ", "subdone ", "subedit ",
     "snooze ", "dup", "standup", "select ",
+    "preset ", "preset list", "preset add", "preset remove",
 ]
 
 CELEBRATION_MESSAGES = [
@@ -138,6 +139,14 @@ CELEBRATION_MESSAGES = [
     "You're on fire!",
     "Done and dusted!",
 ]
+
+
+def _fmt_preset_val(v: float) -> str:
+    if v == 0:
+        return "0"
+    if v == int(v):
+        return str(int(v))
+    return f"{v:.2f}".rstrip("0").rstrip(".")
 
 HELP_TEXT = (
     "TaskWatch+ Help\n\n"
@@ -203,6 +212,13 @@ HELP_TEXT = (
     "                       (bulk-select tasks with Space first to copy all selected)\n\n"
     "Timer:\n"
     "  :st <minutes|preset>   Start countdown timer (or preset name like \"pomodoro\")\n"
+    "  :ts | :timerStop      Stop timer\n"
+    "  :pt | :pauseTimer     Pause / unpause timer\n"
+    "  :rt | :resetTimer     Reset timer\n"
+    "  :schbar               Show timer schedule bar\n"
+    "  :preset list          List timer presets\n"
+    "  :preset add <n> <p> <w> <b> <l>  Add preset (times: 30m, 15s, 1h, 1h30m)\n"
+    "  :preset remove <n>    Remove preset\n"
     "  :snooze <days>        Postpone selected task's deadline by N days\n"
     "  :dup                  Duplicate selected task\n\n"
     "Pinning & Dependencies:\n"
@@ -221,11 +237,6 @@ HELP_TEXT = (
     "  :select pinned         Select all pinned tasks\n\n"
     "Standup:\n"
     "  :standup              Show yesterday's completed tasks as markdown\n\n"
-    "  :st <minutes>          Start countdown timer\n"
-    "  :ts | :timerStop      Stop timer\n"
-    "  :pt | :pauseTimer     Pause / unpause timer\n"
-    "  :rt | :resetTimer     Reset timer\n"
-    "  :schbar               Show timer schedule bar\n\n"
     "Sound:\n"
     "  :sound               Toggle timer sounds on/off\n"
     "  :sound on | :sound off  Explicit enable/disable\n"
@@ -777,7 +788,7 @@ class TaskWatchTUI:
         self._caption_alarm_handle: object | None = None
         self._current_prompt: str | tuple = ("standout", "\u276f ")
         self._highlight_color: str = "default"
-        self._timer_presets: dict[str, int] = {}
+        self._timer_presets: dict[str, dict] = {}
         self._ai_inbox: queue.Queue = queue.Queue()
         self._ai_chat_widget: ai_chat.AIChatWidget | None = None
         cfg_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
@@ -813,11 +824,28 @@ class TaskWatchTUI:
                     elif line.startswith("TIMER_PRESET:"):
                         _, rest = line.split(":", 1)
                         if "=" in rest:
-                            name, mins = rest.split("=", 1)
-                            try:
-                                self._timer_presets[name.strip()] = int(mins)
-                            except ValueError:
-                                pass
+                            name, val = rest.split("=", 1)
+                            name = name.strip()
+                            if "," in val:
+                                parts = val.split(",")
+                                if len(parts) == 4:
+                                    try:
+                                        self._timer_presets[name] = {
+                                            "prep": float(parts[0]),
+                                            "work": float(parts[1]),
+                                            "break": float(parts[2]),
+                                            "laps": int(parts[3]),
+                                        }
+                                    except ValueError:
+                                        pass
+                            else:
+                                try:
+                                    mins = float(val)
+                                    self._timer_presets[name] = {
+                                        "prep": 0.0, "work": mins, "break": 0.0, "laps": 1,
+                                    }
+                                except ValueError:
+                                    pass
         except OSError:
             pass
 
@@ -1747,9 +1775,8 @@ class TaskWatchTUI:
         if cmd.startswith("st "):
             arg = cmd.split(" ", 1)[1]
             if arg in self._timer_presets:
-                mins = self._timer_presets[arg]
-                if mins > 0:
-                    self._start_timer(mins)
+                preset = self._timer_presets[arg]
+                self._start_timer_from_preset(preset, name=arg)
             else:
                 try:
                     mins = int(arg)
@@ -1757,6 +1784,9 @@ class TaskWatchTUI:
                         self._start_timer(mins)
                 except ValueError:
                     self._set_timed_caption("error", f"Unknown preset '{arg}' ")
+            return
+        if cmd in ("preset",) or cmd.startswith("preset "):
+            self._cmd_preset(cmd)
             return
         if cmd in ("ts", "timerStop"):
             self._stop_timer()
@@ -3752,6 +3782,60 @@ class TaskWatchTUI:
         self._prev_timer_segment_idx = 0
         self._update_clock_display()
 
+    def _segments_from_preset(self, preset: dict) -> list[int]:
+        prep_s = int(round(preset["prep"] * 60))
+        work_s = int(round(preset["work"] * 60))
+        break_s = int(round(preset["break"] * 60))
+        laps = preset["laps"]
+        segments = []
+        if prep_s > 0:
+            segments.append(prep_s)
+        for i in range(laps):
+            segments.append(work_s)
+            if i < laps - 1 and break_s > 0:
+                segments.append(break_s)
+        return segments
+
+    def _start_timer_from_preset(self, preset: dict, name: str = "Timer") -> None:
+        segments = self._segments_from_preset(preset)
+        total = sum(segments)
+        schedule = {
+            "total_minutes": total // 60,
+            "total_seconds": total,
+            "segments": segments,
+            "segment_count": len(segments),
+            "source": "preset",
+            "preset_name": name,
+        }
+        self._kill_daemon()
+        self._write_timer_state({
+            "running": True,
+            "mode": "scheduled",
+            "task_id": None,
+            "task_name": f"[{name}]",
+            "schedule": schedule,
+            "total_seconds": total,
+            "remaining": total,
+            "paused": False,
+            "stopped": False,
+            "start_time": time.time(),
+            "pause_elapsed": 0.0,
+            "segment_idx": 0,
+            "segment_elapsed": 0,
+        })
+        self._spawn_daemon()
+        self._timer_running = True
+        self._timer_schedule = schedule
+        self._timer_segment_idx = 0
+        self._timer_segment_elapsed = 0
+        self._prev_timer_segment_idx = 0
+        self._timer_paused = False
+        self._timer_task_id = None
+        self._timer_task_name = f"[{name}]"
+        self._timer_seconds = total
+        self._timer_elapsed = 0
+        self._update_clock_display()
+
     def _stop_timer(self) -> None:
         self._write_timer_state({"stopped": True})
         self._timer_running = False
@@ -3846,6 +3930,79 @@ class TaskWatchTUI:
                             f.write("SOUND_DONE:\n")
         except OSError:
             pass
+
+    def _cmd_preset(self, cmd: str) -> None:
+        parts = cmd.split()
+        if len(parts) == 1 or (len(parts) == 2 and parts[1] == "list"):
+            self._show_preset_list()
+        elif parts[1] == "add" and len(parts) == 7:
+            name, sp, sw, sb, sl = parts[2], parts[3], parts[4], parts[5], parts[6]
+            try:
+                prep = timer_mod.parse_time_string(sp)
+                work = timer_mod.parse_time_string(sw)
+                break_ = timer_mod.parse_time_string(sb)
+                laps = int(sl)
+            except ValueError:
+                self._set_timed_caption("error", "Usage: :preset add <name> <prep> <work> <break> <laps>")
+                return
+            if work <= 0 or laps <= 0:
+                self._set_timed_caption("error", "Work and laps must be > 0")
+                return
+            self._timer_presets[name] = {"prep": prep, "work": work, "break": break_, "laps": laps}
+            self._write_presets_to_config()
+            total = prep + work * laps + break_ * max(0, laps - 1)
+            self._set_timed_caption("done", f"Preset '{name}' added ({_fmt_preset_val(total)}m)")
+        elif parts[1] == "remove" and len(parts) == 3:
+            name = parts[2]
+            if name in self._timer_presets:
+                del self._timer_presets[name]
+                self._write_presets_to_config()
+                self._set_timed_caption("done", f"Preset '{name}' removed")
+            else:
+                self._set_timed_caption("error", f"Preset '{name}' not found")
+        else:
+            self._set_timed_caption("error", "Usage: :preset [list|add <n> <p> <w> <b> <l>|remove <n>]")
+
+    def _show_preset_list(self) -> None:
+        if not self._timer_presets:
+            self._set_timed_caption("dim", "No presets configured")
+            return
+        walker: list[Text] = []
+        walker.append(Text([("head", "  Timer Presets\n")]))
+        for name, p in sorted(self._timer_presets.items()):
+            total = p["prep"] + p["work"] * p["laps"] + p["break"] * max(0, p["laps"] - 1)
+            line = (
+                f"  {name}: "
+                f"{_fmt_preset_val(p['prep'])} + {_fmt_preset_val(p['work'])} "
+                f"+ {_fmt_preset_val(p['break'])} \u00d7 {p['laps']}"
+                f"  = {_fmt_preset_val(total)}m"
+            )
+            walker.append(Text(line))
+        walker.append(Text(""))
+        walker.append(Text("  Press esc / q to close"))
+        content = LineBox(VimListBox(SimpleFocusListWalker(walker)))
+        overlay = Overlay(
+            content, self._frame,
+            align="center", width=("relative", 50),
+            valign="middle", height=("relative", 50),
+        )
+        self._loop.widget = overlay
+
+    def _write_presets_to_config(self) -> None:
+        cfg_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
+        existing_clean: list[str] = []
+        try:
+            for line in cfg_path.read_text().splitlines():
+                if not line.startswith("TIMER_PRESET:"):
+                    existing_clean.append(line)
+        except OSError:
+            pass
+        for name, p in sorted(self._timer_presets.items()):
+            existing_clean.append(
+                f"TIMER_PRESET:{name}={_fmt_preset_val(p['prep'])},{_fmt_preset_val(p['work'])},{_fmt_preset_val(p['break'])},{p['laps']}"
+            )
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text("\n".join(existing_clean) + "\n")
 
     def _update_clock_display(self) -> None:
         now = datetime.now()

@@ -1,4 +1,33 @@
+import re
+
 from .models import Task
+
+
+_TIME_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
+
+
+def parse_time_string(s: str) -> float:
+    """Parse a human-readable time string into minutes (float).
+
+    Accepts: "15s", "30m", "1h", "1h30m", "1h30m15s", "45" (bare = minutes).
+    """
+    s = s.strip().lower()
+    if not s:
+        raise ValueError("empty string")
+    if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
+        return float(s)
+    m = _TIME_RE.match(s)
+    if not m:
+        raise ValueError(f"unrecognized time format: {s!r}")
+    h, mn, sec = m.groups()
+    total = 0.0
+    if h:
+        total += int(h) * 60.0
+    if mn:
+        total += int(mn)
+    if sec:
+        total += int(sec) / 60.0
+    return total
 
 WORK_PERCENTAGE_MATRIX = [
     [68, 61, 74, 77, 90],

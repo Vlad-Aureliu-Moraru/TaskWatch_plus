@@ -216,7 +216,8 @@ def run_scheduled(schedule: dict, task_id: int, task_name: str, total_seconds: i
 
         if seg_idx >= len(segments):
             _log_session(task_id, total_seconds)
-            _mark_done(task_id)
+            if task_id is not None:
+                _mark_done(task_id)
             _notify(f"{task_name} ({int(total_seconds // 60)}m)")
             _atomic_write({"running": False})
             _clear_timer_file()

@@ -150,7 +150,10 @@ def build_parser() -> argparse.ArgumentParser:
     tmp_sub.add_parser("list")
     tpa = tmp_sub.add_parser("add")
     tpa.add_argument("name")
-    tpa.add_argument("minutes", type=int)
+    tpa.add_argument("prep", type=str)
+    tpa.add_argument("work", type=str)
+    tpa.add_argument("break_", type=str, metavar="break")
+    tpa.add_argument("laps", type=int)
     tpr = tmp_sub.add_parser("remove")
     tpr.add_argument("name")
 
@@ -433,22 +436,40 @@ def _handle_subtask(action: str, opts):
 _CONFIG_BASE = Path(__file__).resolve().parent.parent / "config"
 
 
-def _read_presets() -> dict[str, int]:
-    presets: dict[str, int] = {}
+def _read_presets() -> dict[str, dict]:
+    presets: dict[str, dict] = {}
     cfg = _CONFIG_BASE / "config.txt"
     try:
         for line in cfg.read_text().splitlines():
             if line.startswith("TIMER_PRESET:"):
                 _, rest = line.split(":", 1)
                 if "=" in rest:
-                    name, mins = rest.split("=", 1)
-                    presets[name.strip()] = int(mins)
+                    name, val = rest.split("=", 1)
+                    name = name.strip()
+                    if "," in val:
+                        parts = val.split(",")
+                        if len(parts) == 4:
+                            try:
+                                presets[name] = {
+                                    "prep": float(parts[0]),
+                                    "work": float(parts[1]),
+                                    "break": float(parts[2]),
+                                    "laps": int(parts[3]),
+                                }
+                            except ValueError:
+                                pass
+                    else:
+                        try:
+                            mins = float(val)
+                            presets[name] = {"prep": 0.0, "work": mins, "break": 0.0, "laps": 1}
+                        except ValueError:
+                            pass
     except (OSError, ValueError):
         pass
     return presets
 
 
-def _write_presets(presets: dict[str, int]) -> None:
+def _write_presets(presets: dict[str, dict]) -> None:
     cfg = _CONFIG_BASE / "config.txt"
     existing_clean: list[str] = []
     try:
@@ -457,10 +478,18 @@ def _write_presets(presets: dict[str, int]) -> None:
                 existing_clean.append(line)
     except OSError:
         pass
-    for name, mins in sorted(presets.items()):
-        existing_clean.append(f"TIMER_PRESET:{name}={mins}")
+    for name, p in sorted(presets.items()):
+        existing_clean.append(
+            f"TIMER_PRESET:{name}={_fmt_preset_val(p['prep'])},{_fmt_preset_val(p['work'])},{_fmt_preset_val(p['break'])},{p['laps']}"
+        )
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text("\n".join(existing_clean) + "\n")
+
+
+def _fmt_preset_val(v: float) -> str:
+    if v == int(v):
+        return str(int(v))
+    return f"{v:.2f}".rstrip("0").rstrip(".")
 
 
 def _handle_timer(action: str, opts):
@@ -480,13 +509,26 @@ def _handle_timer(action: str, opts):
             if not presets:
                 print("No timer presets configured")
             else:
-                for name, mins in sorted(presets.items()):
-                    print(f"{name}={mins}m")
+                for name, p in sorted(presets.items()):
+                    total = p["prep"] + p["work"] * p["laps"] + p["break"] * max(0, p["laps"] - 1)
+                    print(f"  {name}: {_fmt_display(p['prep'])} + {_fmt_display(p['work'])} + {_fmt_display(p['break'])} \u00d7 {p['laps']} = {_fmt_display(total)}m")
         elif opts.preset_action == "add":
             presets = _read_presets()
-            presets[opts.name] = opts.minutes
+            try:
+                prep = timer.parse_time_string(opts.prep)
+                work = timer.parse_time_string(opts.work)
+                break_ = timer.parse_time_string(opts.break_)
+                laps = opts.laps
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+            if work <= 0 or laps <= 0:
+                print("Error: work and laps must be > 0", file=sys.stderr)
+                sys.exit(1)
+            presets[opts.name] = {"prep": prep, "work": work, "break": break_, "laps": laps}
             _write_presets(presets)
-            print(f"Added preset '{opts.name}={opts.minutes}m'")
+            total = prep + work * laps + break_ * max(0, laps - 1)
+            print(f"Added preset '{opts.name}' ({_fmt_display(prep)} + {_fmt_display(work)} + {_fmt_display(break_)} \u00d7 {laps} = {_fmt_display(total)}m)")
         elif opts.preset_action == "remove":
             presets = _read_presets()
             if opts.name in presets:
@@ -496,6 +538,14 @@ def _handle_timer(action: str, opts):
             else:
                 print(f"Preset '{opts.name}' not found", file=sys.stderr)
                 sys.exit(1)
+
+
+def _fmt_display(v: float) -> str:
+    if v == 0:
+        return "0"
+    if v == int(v):
+        return str(int(v))
+    return f"{v:.2f}".rstrip("0").rstrip(".")
 
 
 def _handle_export(opts):
