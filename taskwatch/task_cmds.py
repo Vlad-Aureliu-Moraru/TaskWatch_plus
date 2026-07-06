@@ -376,7 +376,7 @@ def _advance_until_current(task: Task) -> bool:
     today = date.today().isoformat()
     advanced = False
     for _ in range(50):
-        if task.deadline == "none" or task.deadline > today:
+        if task.deadline == "none" or task.deadline >= today:
             break
         new_task = advance_deadline(task, reset_finished=False)
         if new_task is None:
@@ -659,6 +659,34 @@ def search_tasks_global(query: str, limit: int = 10) -> list[tuple[Task, str]]:
         LIMIT ?
     """, (like, like, limit)).fetchall()
     return [(_row_to_task(r), r["dir_name"]) for r in rows]
+
+
+def get_announcements(archive_id: int | None = None) -> list[dict]:
+    today_str = date.today().isoformat()
+    tomorrow_str = (date.today() + timedelta(days=1)).isoformat()
+    conn = get_conn()
+    conditions = ["t.finished = 0", "t.deadline != 'none'", "t.deadline <= ?"]
+    params = [tomorrow_str]
+    if archive_id is not None:
+        conditions.append("d.archive_id = ?")
+        params.append(archive_id)
+    rows = conn.execute(
+        f"""SELECT t.*, d.name AS dir_name, a.name AS arch_name
+            FROM tasks t
+            JOIN directories d ON t.directory_id = d.id
+            JOIN archives a ON d.archive_id = a.id
+            WHERE {' AND '.join(conditions)}
+            ORDER BY
+                CASE
+                    WHEN t.deadline < ? THEN 0
+                    WHEN t.deadline = ? THEN 1
+                    ELSE 2
+                END,
+                t.deadline,
+                t.urgency DESC""",
+        params + [today_str, today_str],
+    ).fetchall()
+    return [{"task": _row_to_task(r), "dir_name": r["dir_name"], "arch_name": r["arch_name"]} for r in rows]
 
 
 def _row_to_task(r) -> Task:

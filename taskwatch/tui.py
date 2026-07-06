@@ -8,6 +8,7 @@ import queue
 import shutil
 import signal
 import subprocess
+import threading
 import sys
 import tempfile
 import time
@@ -22,6 +23,7 @@ from urwid import (
     AttrMap,
     Columns,
     Edit,
+    Filler,
     Frame,
     LineBox,
     ListBox,
@@ -118,7 +120,7 @@ COMMANDS = [
     "st", "ts", "timerStop", "pt", "pauseTimer", "rt", "resetTimer",
     "su a", "su d", "sd a", "sd d", "sn a", "sn d", "sdl a", "sdl d", "sr",
     "tag ", "untag ", "ft ", "gs ", "qa ", "mv ", "mu", "md", "all",
-    "export", "import ", "overdue", "schbar", "ai", "aii", "highlight",
+    "export", "import ", "importJSON ", "importJSONtaskTemplateCopy", "overdue", "schbar", "ai", "aii", "highlight",
     "bm", "bd", "bt ", "bv ", "bc", "y", "sound", "sound on", "sound off",
     "sound work ", "sound break ", "sound done ",
     "pin", "unpin", "depends ", "undepends ",
@@ -283,6 +285,22 @@ def _copy_to_clipboard(text: str) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         pass
     return False
+
+
+def _paste_from_clipboard() -> str | None:
+    for cmd in (
+        ["wl-paste"],
+        ["xclip", "-selection", "clipboard", "-o"],
+        ["xsel", "--clipboard", "--output"],
+        ["pbpaste"],
+    ):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=5)
+            if proc.returncode == 0:
+                return proc.stdout.decode()
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return None
 
 
 import math as _math  # noqa: E402
@@ -791,6 +809,10 @@ class TaskWatchTUI:
         self._timer_presets: dict[str, dict] = {}
         self._ai_inbox: queue.Queue = queue.Queue()
         self._ai_chat_widget: ai_chat.AIChatWidget | None = None
+        self._loading: bool = False
+        self._loading_spinner_idx: int = 0
+        self._loading_frames: list[str] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._loading_title: str = ""
         cfg_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
         try:
             with open(cfg_path) as f:
@@ -884,6 +906,32 @@ class TaskWatchTUI:
                 self._cmd.set_caption(("standout", "\u276f ")),
             ),
         )
+
+    def _start_loading(self, title: str = "") -> None:
+        self._loading = True
+        self._loading_spinner_idx = 0
+        self._loading_title = title
+        self._cmd.set_caption(("standout", f"\u276f {self._loading_frames[0]} {title}"))
+
+    def _stop_loading(self) -> None:
+        self._loading = False
+        self._loading_title = ""
+        self._cmd.set_caption(("standout", "\u276f "))
+
+    def _run_async(self, target: Callable[[], object], on_done: Callable[[object], None], title: str = "") -> None:
+        self._start_loading(title)
+        def worker() -> None:
+            try:
+                result = target()
+            except Exception as e:
+                result = e
+            self._ai_inbox.put(lambda: self._on_async_done(result, on_done))
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+
+    def _on_async_done(self, result: object, on_done: Callable[[object], None]) -> None:
+        self._stop_loading()
+        on_done(result)
 
     def _refresh_list(self) -> None:
         self._list_walker.clear()
@@ -1092,15 +1140,66 @@ class TaskWatchTUI:
 
         if self._level == Level.ARCHIVES:
             a = self._current_items[idx]
-            self._set_detail(
+            lines: list[str | list] = [
                 [("head", f"\uf187 {a.name}"), ("dim", f" (id: {a.id})"), "\n\nPress Enter to browse directories."],
-            )
+            ]
+            announcements = task_cmds.get_announcements()
+            if announcements:
+                lines.append("")
+                lines.append([("head", "  \uf0aa Announcements")])
+                lines.append([("dim", "  " + "\u2500" * 30)])
+                groups: dict[str, dict[str, list]] = {}
+                for entry in announcements:
+                    arch = entry["arch_name"]
+                    dname = entry["dir_name"]
+                    if arch not in groups:
+                        groups[arch] = {}
+                    if dname not in groups[arch]:
+                        groups[arch][dname] = []
+                    groups[arch][dname].append(entry)
+                for arch_name in sorted(groups.keys()):
+                    lines.append([("head", f"  [{arch_name}]")])
+                    for dir_name in sorted(groups[arch_name].keys()):
+                        for entry in groups[arch_name][dir_name]:
+                            task = entry["task"]
+                            rel = task_cmds.relative_deadline(task.deadline)
+                            style = "error" if "Overdue" in rel else ("c3" if "today" in rel else "default")
+                            lines.append([(style, f"    \u25cb {task.name}")])
+                            lines.append([("dim", f"      {dir_name} \u2022 {rel}")])
+            else:
+                lines.append([("c2", "  \u2713 No tasks due today")])
+            self._set_detail(*lines)
 
         elif self._level == Level.DIRECTORIES:
             d = self._current_items[idx]
-            self._set_detail(
+            lines: list[str | list] = [
                 [("head", f"\uf4d3 {d.name}"), ("dim", f" (id: {d.id})"), "\n\nPress Enter to browse tasks."],
-            )
+            ]
+            archive_id = self._selected_archive_id
+            announcements = task_cmds.get_announcements(archive_id=archive_id) if archive_id is not None else []
+            if announcements:
+                lines.append("")
+                lines.append([("head", "  \uf0aa Announcements")])
+                lines.append([("dim", "  " + "\u2500" * 30)])
+                groups: dict[str, list] = {}
+                for entry in announcements:
+                    dname = entry["dir_name"]
+                    if dname not in groups:
+                        groups[dname] = []
+                    groups[dname].append(entry)
+                show_dir_header = len(groups) > 1
+                for dir_name in sorted(groups.keys()):
+                    if show_dir_header:
+                        lines.append([("head", f"  [{dir_name}]")])
+                    for entry in groups[dir_name]:
+                        task = entry["task"]
+                        rel = task_cmds.relative_deadline(task.deadline)
+                        style = "error" if "Overdue" in rel else ("c3" if "today" in rel else "default")
+                        lines.append([(style, f"    \u25cb {task.name}")])
+                        lines.append([("dim", f"      {rel}")])
+            else:
+                lines.append([("c2", "  \u2713 No tasks due today")])
+            self._set_detail(*lines)
 
         elif self._level == Level.TASKS:
             task = self._current_items[idx]
@@ -1668,6 +1767,22 @@ class TaskWatchTUI:
             result = io_cmds.import_data(path)
             self._set_timed_caption("done" if "failed" not in result else "error", f"{result} ", 3)
             self._refresh_list()
+            return
+        if cmd == "importJSON":
+            if self._selected_directory_id is None:
+                self._set_timed_caption("error", "Select a directory first ")
+                return
+            self._show_import_json_panel()
+            return
+        if cmd.startswith("importJSON "):
+            if self._selected_directory_id is None:
+                self._set_timed_caption("error", "Select a directory first ")
+                return
+            path = cmd.split(" ", 1)[1].strip()
+            self._cmd_import_json_file(path)
+            return
+        if cmd == "importJSONtaskTemplateCopy":
+            self._cmd_import_json_template()
             return
         if cmd == "bm":
             if self._level == Level.TASKS and self._bulk_selection:
@@ -2565,6 +2680,22 @@ class TaskWatchTUI:
         self._cmd.set_edit_text(completed)
         self._cmd.set_edit_pos(len(completed))
 
+    def _show_import_json_panel(self) -> None:
+        overlay = ImportJSONOverlay(self)
+        self._import_json_overlay = Overlay(
+            overlay,
+            self._frame,
+            align="center",
+            width=("relative", 80),
+            valign="middle",
+            height=("relative", 60),
+        )
+        self._loop.widget = self._import_json_overlay
+
+    def _close_import_json_panel(self) -> None:
+        self._import_json_overlay = None
+        self._loop.widget = self._frame
+
     def _open_global_search(self) -> None:
         overlay = GlobalSearchOverlay(self)
         self._global_search_overlay = Overlay(
@@ -3128,16 +3259,88 @@ class TaskWatchTUI:
             return
 
         raw = json.dumps(data, indent=2, default=str)
-        if _copy_to_clipboard(raw):
-            name = self._get_selected_name() or ""
-            if self._bulk_selection:
-                self._set_timed_caption("done", f"Copied {len(self._bulk_selection)} tasks to clipboard ")
-            elif name:
-                self._set_timed_caption("done", f"Copied '{name}' to clipboard ")
-            else:
-                self._set_timed_caption("done", "Copied to clipboard ")
+        name = self._get_selected_name() or ""
+        bulk_count = len(self._bulk_selection)
+        if bulk_count:
+            success_msg = f"Copied {bulk_count} tasks to clipboard "
+        elif name:
+            success_msg = f"Copied '{name}' to clipboard "
         else:
-            self._set_timed_caption("error", "Clipboard tools not found (wl-copy/xclip/xsel) ")
+            success_msg = "Copied to clipboard "
+        self._run_async(
+            lambda: _copy_to_clipboard(raw),
+            lambda r: self._finish_clipboard(r, success_msg, "Clipboard tools not found (wl-copy/xclip/xsel) "),
+            "Copying...",
+        )
+
+    def _finish_clipboard(self, result: object, success_msg: str, error_msg: str) -> None:
+        success = bool(result) if isinstance(result, bool) else False
+        if success:
+            self._set_timed_caption("done", success_msg, 3)
+        else:
+            self._set_timed_caption("error", error_msg, 3)
+
+    def _cmd_import_json_template(self) -> None:
+        template = json.dumps(
+            [
+                {
+                    "name": "example task",
+                    "description": "description here",
+                    "urgency": 1,
+                    "difficulty": 1,
+                    "time_dedicated": 0,
+                    "deadline": "none",
+                    "repeatable": False,
+                    "repeatable_type": "none",
+                    "repeat_on_specific_day": "none",
+                    "has_to_be_completed_to_repeat": True,
+                    "pinned": False,
+                },
+                {
+                    "name": "another task",
+                    "description": "",
+                    "urgency": 2,
+                    "difficulty": 3,
+                    "time_dedicated": 3600,
+                    "deadline": "2026-12-31",
+                    "repeatable": True,
+                    "repeatable_type": "daily",
+                    "repeat_on_specific_day": "none",
+                    "has_to_be_completed_to_repeat": False,
+                    "pinned": True,
+                },
+            ],
+            indent=2,
+        )
+        self._run_async(
+            lambda: _copy_to_clipboard(template),
+            lambda r: self._finish_clipboard(r, "Import JSON template copied to clipboard ", "Clipboard tools not found (wl-copy/xclip/xsel) "),
+            "Copying...",
+        )
+
+    def _cmd_import_json_file(self, path: str) -> None:
+        try:
+            text = open(path, "r", encoding="utf-8").read()
+        except OSError as e:
+            self._set_timed_caption("error", f"Cannot read file: {e} ")
+            return
+        target_dir = self._selected_directory_id
+        self._run_async(
+            lambda: io_cmds.import_tasks_from_directory_json(text, target_dir),
+            lambda r: self._finish_import(r),
+            "Importing...",
+        )
+
+    def _finish_import(self, result: object) -> None:
+        if isinstance(result, tuple) and len(result) == 2:
+            success, msg = result
+            if success:
+                self._set_timed_caption("done", f"{msg} ", 3)
+            else:
+                self._set_timed_caption("error", f"{msg} ", 3)
+        else:
+            self._set_timed_caption("error", f"Import failed: {result} ", 3)
+        self._refresh_list()
 
     def _gather_ai_context(self) -> dict | None:
         if self._level != Level.TASKS or self._selected_task_id is None:
@@ -4124,6 +4327,12 @@ class TaskWatchTUI:
             if self._tick_counter % 300 == 0:
                 self._check_and_notify_deadlines()
 
+            if self._loading:
+                self._loading_spinner_idx = (self._loading_spinner_idx + 1) % len(self._loading_frames)
+                spinner = self._loading_frames[self._loading_spinner_idx]
+                title = self._loading_title
+                self._cmd.set_caption(("standout", f"\u276f {spinner} {title}"))
+
             self._update_clock_display()
         finally:
             self._loop.set_alarm_in(1, self._tick)
@@ -4225,6 +4434,73 @@ def _build_highlighted_text(text: str, query: str) -> list:
             else:
                 result.append(("default", ch))
     return result
+
+
+class ImportJSONOverlay(WidgetWrap):
+    def __init__(self, app: "TaskWatchTUI"):
+        self._app = app
+        self._importing = False
+        self._edit = Edit("")
+        self._edit.set_caption(("standout", "  "))
+        self._result = Text("")
+        clipboard = _paste_from_clipboard()
+        if clipboard:
+            self._edit.set_edit_text(clipboard)
+            title = "Import JSON"
+            header = Text([("head", "  JSON loaded from clipboard — press "), ("special", "Ctrl+E"), ("head", " to import  |  "), ("special", "Esc"), ("head", " to cancel")])
+            sample = clipboard.strip()[:80].replace("\n", " ")
+            self._result.set_text([("default", f"  Loaded {len(clipboard)} chars: {sample}…")])
+        else:
+            title = "Import JSON (paste in panel)"
+            header = Text([("head", "  Paste JSON below, then press "), ("special", "Ctrl+E"), ("head", " to import  |  "), ("special", "Esc"), ("head", " to cancel")])
+        pile = Pile([
+            ("pack", AttrMap(header, "default")),
+            ("weight", 1, LineBox(Filler(self._edit, valign="top"))),
+            ("pack", self._result),
+        ])
+        super().__init__(LineBox(pile, title=title))
+
+    def keypress(self, size: tuple[int, int], key: str) -> str | None:
+        if self._importing:
+            return None
+        if key == "esc":
+            self._app._close_import_json_panel()
+            return None
+        if key == "ctrl e":
+            self._do_import()
+            return None
+        return super().keypress(size, key)
+
+    def _do_import(self) -> None:
+        text = self._edit.get_edit_text().strip()
+        if not text:
+            self._result.set_text([("error", "  No JSON entered")])
+            return
+        if self._app._selected_directory_id is None:
+            self._result.set_text([("error", "  No directory selected")])
+            return
+
+        self._importing = True
+        self._result.set_text([("default", "  Importing...")])
+        target_dir = self._app._selected_directory_id
+        self._app._run_async(
+            lambda: io_cmds.import_tasks_from_directory_json(text, target_dir),
+            lambda r: self._on_import_done(r),
+            "Importing...",
+        )
+
+    def _on_import_done(self, result: object) -> None:
+        self._importing = False
+        if isinstance(result, tuple) and len(result) == 2:
+            success, msg = result
+            if success:
+                self._app._set_timed_caption("done", f"{msg} ", 3)
+                self._app._close_import_json_panel()
+                self._app._refresh_list()
+            else:
+                self._result.set_text([("error", f"  {msg}")])
+        else:
+            self._result.set_text([("error", f"  Import failed: {result}")])
 
 
 class GlobalSearchOverlay(WidgetWrap):

@@ -1,7 +1,11 @@
 import json
+from datetime import date
 from pathlib import Path
 
 from .db import get_conn
+from .note_cmds import create_note
+from .tag_cmds import add_tag_to_task
+from .task_cmds import create_task
 
 ALLOWED_TABLES = frozenset({"archives", "directories", "tasks", "notes", "tags", "task_tags"})
 
@@ -70,3 +74,79 @@ def import_data(path: str) -> str:
     except Exception:
         conn.rollback()
         return "Import failed"
+
+
+def import_tasks_from_directory_json(json_str: str, target_directory_id: int) -> tuple[bool, str]:
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        return False, f"Invalid JSON: {e}"
+
+    tasks_normalized: list[dict] = []
+
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                return False, "Each item in the array must be a JSON object"
+            tasks_normalized.append(item)
+    elif isinstance(data, dict):
+        if "task" in data:
+            tasks_normalized.append(data)
+        elif "tasks" in data and isinstance(data["tasks"], list):
+            tasks_normalized.extend(data["tasks"])
+        else:
+            return False, "Unrecognized JSON structure"
+    else:
+        return False, "Expected a JSON object or array"
+
+    if not tasks_normalized:
+        return False, "No tasks found in JSON"
+
+    imported = 0
+    errors: list[str] = []
+    total = len(tasks_normalized)
+
+    for entry in tasks_normalized:
+        task_data = entry.get("task", entry)
+        name = task_data.get("name", "").strip()
+        if not name:
+            errors.append("A task is missing a name")
+            continue
+
+        try:
+            task = create_task(
+                directory_id=target_directory_id,
+                name=name,
+                description=task_data.get("description", ""),
+                deadline=task_data.get("deadline", "none"),
+                urgency=task_data.get("urgency", 1),
+                difficulty=task_data.get("difficulty", 1),
+                time_dedicated=task_data.get("time_dedicated", 0),
+                repeatable=task_data.get("repeatable", False),
+                repeatable_type=task_data.get("repeatable_type", "none"),
+                has_to_be_completed_to_repeat=task_data.get("has_to_be_completed_to_repeat", True),
+                repeat_on_specific_day=task_data.get("repeat_on_specific_day", "none"),
+                pinned=task_data.get("pinned", False),
+            )
+
+            for note_data in entry.get("notes", []):
+                if isinstance(note_data, dict):
+                    create_note(
+                        task_id=task.id,
+                        date=note_data.get("date", date.today().isoformat()),
+                        note=note_data.get("note", ""),
+                        file_path=note_data.get("file_path"),
+                    )
+
+            for tag_name in entry.get("tags", []):
+                if isinstance(tag_name, str) and tag_name.strip():
+                    add_tag_to_task(task.id, tag_name.strip())
+
+            imported += 1
+        except ValueError as e:
+            errors.append(f"'{name}': {e}")
+
+    msg = f"Imported {imported} of {total} task(s)"
+    if errors:
+        msg += f". {len(errors)} error(s): {'; '.join(errors[:3])}"
+    return True, msg
