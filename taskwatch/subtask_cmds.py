@@ -72,11 +72,3 @@ def update_subtask(subtask_id: int, content: str) -> Subtask | None:
     return Subtask(id=row["id"], task_id=row["task_id"], content=row["content"],
                    finished=bool(row["finished"]), position=row["position"])
 
-
-def get_subtask(subtask_id: int) -> Subtask | None:
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM subtasks WHERE id = ?", (subtask_id,)).fetchone()
-    if row is None:
-        return None
-    return Subtask(id=row["id"], task_id=row["task_id"], content=row["content"],
-                   finished=bool(row["finished"]), position=row["position"])

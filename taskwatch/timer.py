@@ -1,4 +1,6 @@
+import json
 import re
+from pathlib import Path
 
 from .models import Task
 
@@ -116,3 +118,70 @@ def _fmt_duration(seconds: int) -> str:
     if h:
         return f"{h}h{m:02}m{s:02}s"
     return f"{m}m{s:02}s"
+
+
+def fmt_timer_val(v: float) -> str:
+    if v == int(v):
+        return str(int(v))
+    return f"{v:.2f}".rstrip("0").rstrip(".")
+
+
+def read_presets() -> dict[str, dict]:
+    presets: dict[str, dict] = {}
+    cfg = _config_path()
+    try:
+        for line in cfg.read_text().splitlines():
+            if line.startswith("TIMER_PRESET:"):
+                _, rest = line.split(":", 1)
+                if "=" in rest:
+                    name, val = rest.split("=", 1)
+                    name = name.strip()
+                    if "," in val:
+                        parts = val.split(",")
+                        if len(parts) == 4:
+                            try:
+                                presets[name] = {
+                                    "prep": float(parts[0]),
+                                    "work": float(parts[1]),
+                                    "break": float(parts[2]),
+                                    "laps": int(parts[3]),
+                                }
+                            except ValueError:
+                                pass
+                    else:
+                        try:
+                            mins = float(val)
+                            presets[name] = {"prep": 0.0, "work": mins, "break": 0.0, "laps": 1}
+                        except ValueError:
+                            pass
+    except (OSError, ValueError):
+        pass
+    return presets
+
+
+def write_presets(presets: dict[str, dict]) -> None:
+    cfg = _config_path()
+    existing_clean: list[str] = []
+    try:
+        for line in cfg.read_text().splitlines():
+            if not line.startswith("TIMER_PRESET:"):
+                existing_clean.append(line)
+    except OSError:
+        pass
+    for name, p in sorted(presets.items()):
+        existing_clean.append(
+            f"TIMER_PRESET:{name}={fmt_timer_val(p['prep'])},{fmt_timer_val(p['work'])},{fmt_timer_val(p['break'])},{p['laps']}"
+        )
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text("\n".join(existing_clean) + "\n")
+
+
+def _config_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "config" / "config.txt"
+
+
+def atomic_write_json(path: Path, data: object) -> None:
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    tmp.rename(path)

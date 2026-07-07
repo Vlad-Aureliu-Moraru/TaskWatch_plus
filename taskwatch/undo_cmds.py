@@ -16,16 +16,6 @@ def pop() -> dict | None:
     return _undo_stack.pop()
 
 
-def peek() -> dict | None:
-    if not _undo_stack:
-        return None
-    return _undo_stack[-1]
-
-
-def clear() -> None:
-    _undo_stack.clear()
-
-
 def restore_task(data: dict) -> bool:
     conn = get_conn()
     try:

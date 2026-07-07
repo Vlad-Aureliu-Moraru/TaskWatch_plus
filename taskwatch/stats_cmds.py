@@ -174,15 +174,11 @@ def get_completion_streak() -> int:
 
 def directory_stats(directory_id: int) -> tuple[int, int]:
     conn = get_conn()
-    total = conn.execute(
-        "SELECT COUNT(*) FROM tasks WHERE directory_id = ?",
+    row = conn.execute(
+        "SELECT COUNT(*) AS total, COALESCE(SUM(finished), 0) AS done FROM tasks WHERE directory_id = ?",
         (directory_id,),
-    ).fetchone()[0]
-    finished = conn.execute(
-        "SELECT COUNT(*) FROM tasks WHERE directory_id = ? AND finished = 1",
-        (directory_id,),
-    ).fetchone()[0]
-    return (total, finished)
+    ).fetchone()
+    return (row["total"], row["done"])
 
 
 def all_directory_stats() -> list[dict]:

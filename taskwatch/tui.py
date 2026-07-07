@@ -122,7 +122,8 @@ COMMANDS = [
     "st", "ts", "timerStop", "pt", "pauseTimer", "rt", "resetTimer",
     "su a", "su d", "sd a", "sd d", "sn a", "sn d", "sdl a", "sdl d", "sr",
     "tag ", "untag ", "ft ", "gs ", "qa ", "mv ", "mu", "md", "all",
-    "export", "import ",     "importJSON ", "importJSONtaskTemplateCopy", "importJSONnoteTemplateCopy", "overdue", "schbar", "ai", "aii", "highlight",
+    "export", "exportCurrent", "exportCurrent ", "import ", "importExported ",
+    "importJSON ", "importJSONtaskTemplateCopy", "importJSONnoteTemplateCopy", "overdue", "schbar", "ai", "aii", "highlight",
     "bm", "bd", "bt ", "bv ", "bc", "y", "sound", "sound on", "sound off",
     "sound work ", "sound break ", "sound done ",
     "pin", "unpin", "depends ", "undepends ",
@@ -145,13 +146,6 @@ CELEBRATION_MESSAGES = [
     "Done and dusted!",
 ]
 
-
-def _fmt_preset_val(v: float) -> str:
-    if v == 0:
-        return "0"
-    if v == int(v):
-        return str(int(v))
-    return f"{v:.2f}".rstrip("0").rstrip(".")
 
 HELP_TEXT = (
     "TaskWatch+ Help\n\n"
@@ -211,7 +205,13 @@ HELP_TEXT = (
     "  :undo                Undo last delete / edit / finish\n\n"
     "Export/Import:\n"
     "  :export [path]        Export all data as JSON\n"
-    "  :import <path>        Import data from JSON\n"
+    "  :import <path>        Import all data from JSON\n"
+    "  :exportCurrent [path] Export current item (archive/dir/task/note) as JSON\n"
+    "  :importExported <path> Import file created by :exportCurrent\n"
+    "                       (navigate to target archive/dir/task first)\n"
+    "  :importJSON <path>    Import tasks from JSON file into current directory\n"
+    "  :importJSONtaskTemplateCopy  Import task from clipboard as JSON template\n"
+    "  :importJSONnoteTemplateCopy  Import notes from clipboard as JSON template\n"
     "  :update              Check for updates and update TaskWatch+\n"
     "  :y                   Copy selected item to clipboard as JSON\n"
     "                       (task: details+notes, dir: all tasks, archive: all dirs+tasks)\n"
@@ -380,23 +380,6 @@ def _bar(val: int, outof: int) -> list:
 
 def _level_color(level: int) -> str:
     return f"c{max(1, min(5, level))}"
-
-
-_HALF = ["", "\u258f", "\u258e", "\u258d", "\u258c", "\u258b", "\u258a", "\u2589"]
-
-def _pct_bar(pct: int, width: int) -> list:
-    total_units = width * 8
-    filled_units = int(total_units * pct / 100)
-    full = filled_units // 8
-    rem = filled_units % 8
-    empty = width - full - (1 if rem else 0)
-    fill_style = "done" if pct >= 80 else ("warn" if pct >= 50 else "error")
-    parts = [(fill_style, "\u2588" * full)]
-    if rem:
-        parts.append((fill_style, _HALF[rem]))
-    if empty > 0:
-        parts.append(("bar_e", "\u2591" * empty))
-    return parts
 
 
 _HBLOCK_STEPS = " \u258f\u258e\u258d\u258c\u258b\u258a\u2589\u2588"
@@ -718,9 +701,6 @@ class MainFrame(Frame):
             ],
             dividechars=2,
         )
-        app._app_title = header[0]
-        app._breadcrumb_w = header[1]
-
         app._list_walker = SimpleFocusListWalker([])
         app._list_box = VimListBox(app._list_walker)
         app._detail_walker = SimpleFocusListWalker([])
@@ -807,6 +787,7 @@ class TaskWatchTUI:
         self._notify_deadlines_enabled: bool = True
         self._bulk_selection: set[int] = set()
         self._all_tasks_mode: bool = False
+        self._search_debounce_alarm: object | None = None
         self._caption_alarm_handle: object | None = None
         self._current_prompt: str | tuple = ("standout", "\u276f ")
         self._highlight_color: str = "default"
@@ -889,7 +870,6 @@ class TaskWatchTUI:
         self._cmd: CommandEdit
         self._breadcrumb_text: Text
         self._clock_text: Text
-        self._breadcrumb_w: AttrMap
         self._clock_w: AttrMap
 
     def _focus_body(self) -> None:
@@ -1058,10 +1038,7 @@ class TaskWatchTUI:
                     ids,
                 ):
                     task_tags.setdefault(row["task_id"], []).append(row["name"])
-            blocked_ids: set[int] = set()
-            for t in items:
-                if not t.finished and task_cmds.is_blocked(t.id):
-                    blocked_ids.add(t.id)
+            blocked_ids = task_cmds.get_blocked_ids([t.id for t in items if not t.finished])
 
             pairs: list[tuple[str, str, str]] = []
             for t in items:
@@ -1278,10 +1255,8 @@ class TaskWatchTUI:
         # Dependencies
         dep_ids = task_cmds.get_dependencies(task.id)
         if dep_ids:
-            dep_names = []
-            for did in dep_ids:
-                dt = task_cmds.get_task(did)
-                dep_names.append(f"#{did} {dt.name}" if dt else f"#{did}")
+            dep_map = task_cmds.get_tasks_by_ids(dep_ids)
+            dep_names = [f"#{did} {dep_map[did].name}" if did in dep_map else f"#{did}" for did in dep_ids]
             self._detail_walker.append(Text([
                 ("head", "Depends on: "), ", ".join(dep_names),
             ]))
@@ -1289,10 +1264,8 @@ class TaskWatchTUI:
             self._detail_walker.append(Text([("head", "Depends on: "), "\u2014"]))
         dependent_ids = task_cmds.get_dependents(task.id)
         if dependent_ids:
-            dep_names = []
-            for did in dependent_ids:
-                dt = task_cmds.get_task(did)
-                dep_names.append(f"#{did} {dt.name}" if dt else f"#{did}")
+            dep_map = task_cmds.get_tasks_by_ids(dependent_ids)
+            dep_names = [f"#{did} {dep_map[did].name}" if did in dep_map else f"#{did}" for did in dependent_ids]
             self._detail_walker.append(Text([
                 ("head", "Blocks: "), ", ".join(dep_names),
             ]))
@@ -1457,532 +1430,599 @@ class TaskWatchTUI:
         if not self._prompt_handler:
             self._focus_body()
 
-    def _handle_command(self, cmd: str) -> None:
-        if cmd in ("q", "exit"):
-            raise urwid.ExitMainLoop()
-        if cmd in ("h", "help"):
-            self._show_help()
-            return
-        if cmd in ("a", "add"):
-            self._cmd_add()
-            return
-        if cmd == "at":
-            self._cmd_add_with_file()
-            return
-        if cmd in ("r", "remove", "d"):
-            self._cmd_remove()
-            return
-        if cmd in ("e", "edit"):
-            self._cmd_edit()
-            return
-        if cmd in ("f", "finish"):
-            self._cmd_finish()
-            return
-        if cmd in ("shf", "showFinished"):
-            self._show_finished = not self._show_finished
-            self._refresh_list()
-            return
-        if cmd in ("hf", "hideFinished"):
-            self._show_finished = False
-            self._refresh_list()
-            return
-        if cmd == "y":
-            self._cmd_copy()
-            return
-        if cmd == "pin":
-            if self._level == Level.TASKS:
-                sid = self._get_selected_id()
-                if sid is not None:
-                    task_cmds.edit_task(sid, pinned=1)
-                    self._set_timed_caption("done", "Task pinned ")
-                    self._refresh_list()
-                    self._show_detail()
-            return
-        if cmd == "unpin":
-            if self._level == Level.TASKS:
-                sid = self._get_selected_id()
-                if sid is not None:
-                    task_cmds.edit_task(sid, pinned=0)
-                    self._set_timed_caption("done", "Task unpinned ")
-                    self._refresh_list()
-                    self._show_detail()
-            return
-        if cmd.startswith("depends "):
-            if self._level == Level.TASKS:
-                sid = self._get_selected_id()
-                if sid is not None:
-                    try:
-                        dep_id = int(cmd.split(" ", 1)[1])
-                        task_cmds.add_dependency(sid, dep_id)
-                        self._set_timed_caption("done", f"Dependency on task {dep_id} added ")
-                        self._refresh_list()
-                        self._show_detail()
-                    except ValueError as e:
-                        self._set_timed_caption("error", f"{e} ")
-            return
-        if cmd.startswith("undepends "):
-            if self._level == Level.TASKS:
-                sid = self._get_selected_id()
-                if sid is not None:
-                    try:
-                        dep_id = int(cmd.split(" ", 1)[1])
-                        if task_cmds.remove_dependency(sid, dep_id):
-                            self._set_timed_caption("done", f"Dependency on task {dep_id} removed ")
-                        else:
-                            self._set_timed_caption("error", "Dependency not found ")
-                    except ValueError:
-                        pass
-                    self._refresh_list()
-                    self._show_detail()
-            return
-        if cmd.startswith("subadd "):
-            if self._level == Level.TASKS:
-                sid = self._get_selected_id()
-                if sid is not None:
-                    content = cmd.split(" ", 1)[1].strip()
-                    if content:
-                        subtask_cmds.create_subtask(sid, content)
-                        self._set_timed_caption("done", "Subtask added ")
-                        self._show_detail()
-            return
-        if cmd.startswith("subrm "):
-            if self._level == Level.TASKS:
-                sid = self._get_selected_id()
-                if sid is not None:
-                    try:
-                        nth = int(cmd.split(" ", 1)[1])
-                        subs = subtask_cmds.list_subtasks(sid)
-                        if 1 <= nth <= len(subs):
-                            sub = subs[nth - 1]
-                            subtask_cmds.delete_subtask(sub.id)
-                            self._set_timed_caption("done", f"Subtask {nth} removed ")
-                            self._show_detail()
-                        else:
-                            self._set_timed_caption("error", f"Subtask #{nth} not found ")
-                    except ValueError:
-                        pass
-            return
-        if cmd.startswith("subdone "):
-            if self._level == Level.TASKS:
-                sid = self._get_selected_id()
-                if sid is not None:
-                    try:
-                        nth = int(cmd.split(" ", 1)[1])
-                        subs = subtask_cmds.list_subtasks(sid)
-                        if 1 <= nth <= len(subs):
-                            sub = subs[nth - 1]
-                            if sub.finished:
-                                subtask_cmds.mark_not_done(sub.id)
-                            else:
-                                subtask_cmds.mark_done(sub.id)
-                            self._set_timed_caption("done", f"Subtask {nth} toggled ")
-                            self._show_detail()
-                        else:
-                            self._set_timed_caption("error", f"Subtask #{nth} not found ")
-                    except ValueError:
-                        pass
-            return
-        if cmd.startswith("subedit "):
-            if self._level == Level.TASKS:
-                sid = self._get_selected_id()
-                if sid is not None:
-                    rest = cmd[len("subedit "):].strip()
-                    space_idx = rest.find(" ")
-                    if space_idx > 0:
-                        try:
-                            nth = int(rest[:space_idx])
-                            new_content = rest[space_idx + 1:]
-                            subs = subtask_cmds.list_subtasks(sid)
-                            if 1 <= nth <= len(subs):
-                                subtask_cmds.update_subtask(subs[nth - 1].id, new_content)
-                                self._set_timed_caption("done", f"Subtask {nth} updated ")
-                                self._show_detail()
-                            else:
-                                self._set_timed_caption("error", f"Subtask #{nth} not found ")
-                        except ValueError:
-                            self._set_timed_caption("error", "Usage: subedit <#> <new content> ")
-                    else:
-                        self._set_timed_caption("error", "Usage: subedit <#> <new content> ")
-            return
-        if cmd.startswith("snooze "):
-            if self._level == Level.TASKS:
-                sid = self._get_selected_id()
-                if sid is not None:
-                    try:
-                        days = int(cmd.split(" ", 1)[1])
-                        task = task_cmds.get_task(sid)
-                        if task and task.deadline != "none":
-                            from datetime import datetime, timedelta
-                            new_deadline = (datetime.strptime(task.deadline, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
-                            task_cmds.edit_task(sid, deadline=new_deadline)
-                            self._set_timed_caption("done", f"Deadline bumped {days}d ")
-                        else:
-                            self._set_timed_caption("error", "Task has no deadline ")
-                    except ValueError:
-                        pass
-                    self._refresh_list()
-                    self._show_detail()
-            return
-        if cmd == "dup":
-            if self._level == Level.TASKS:
-                sid = self._get_selected_id()
-                if sid is not None:
-                    task = task_cmds.get_task(sid)
-                    if task:
-                        task_cmds.create_task(
-                            task.directory_id, task.name + " (copy)",
-                            description=task.description, deadline=task.deadline,
-                            urgency=task.urgency, difficulty=task.difficulty,
-                            time_dedicated=task.time_dedicated,
-                            repeatable=task.repeatable, repeatable_type=task.repeatable_type,
-                            has_to_be_completed_to_repeat=task.has_to_be_completed_to_repeat,
-                            repeat_on_specific_day=task.repeat_on_specific_day,
-                        )
-                        self._set_timed_caption("done", "Task duplicated ")
-                        self._refresh_list()
-            return
-        if cmd.startswith("select "):
-            if self._level == Level.TASKS:
-                arg = cmd.split(" ", 1)[1].strip() if " " in cmd else ""
-                conn = db_mod.get_conn()
-                today_str = date.today().isoformat()
-                if arg == "overdue":
-                    rows = conn.execute(
-                        "SELECT id FROM tasks WHERE finished = 0 AND deadline != 'none' AND deadline < ?",
-                        (today_str,),
-                    ).fetchall()
-                elif arg == "due today":
-                    rows = conn.execute(
-                        "SELECT id FROM tasks WHERE finished = 0 AND deadline = ?",
-                        (today_str,),
-                    ).fetchall()
-                elif arg == "pinned":
-                    rows = conn.execute(
-                        "SELECT id FROM tasks WHERE pinned = 1",
-                    ).fetchall()
-                else:
-                    self._set_timed_caption("error", "Usage: select overdue | due today | pinned ")
-                    return
-                self._bulk_selection = {r["id"] for r in rows}
-                self._set_timed_caption("done", f"Selected {len(self._bulk_selection)} tasks ")
-                self._refresh_list()
-            return
-        if cmd == "standup":
-            self._show_standup()
-            return
-        if cmd in ("c", "cancel"):
-            self._prompt_handler = None
-            self._wizard_stack.clear()
-            self._current_prompt = ": "
-            self._cmd.set_caption(": ")
-            self._bulk_selection.clear()
-            self._refresh_list()
-            self._focus_body()
-            return
+    _CMD_DISPATCH: dict[str, str] = {
+        "q": "_cmd_quit", "exit": "_cmd_quit",
+        "h": "_show_help", "help": "_show_help",
+        "a": "_cmd_add", "add": "_cmd_add",
+        "at": "_cmd_add_with_file",
+        "r": "_cmd_remove", "remove": "_cmd_remove", "d": "_cmd_remove",
+        "e": "_cmd_edit", "edit": "_cmd_edit",
+        "f": "_cmd_finish", "finish": "_cmd_finish",
+        "shf": "_cmd_toggle_finished", "showFinished": "_cmd_toggle_finished",
+        "hf": "_cmd_hide_finished", "hideFinished": "_cmd_hide_finished",
+        "y": "_cmd_copy",
+        "pin": "_cmd_pin",
+        "unpin": "_cmd_unpin",
+        "dup": "_cmd_duplicate",
+        "standup": "_show_standup",
+        "c": "_cmd_cancel", "cancel": "_cmd_cancel",
+        "all": "_cmd_all_tasks",
+        "mu": "_cmd_move_up",
+        "md": "_cmd_move_down",
+        "export": "_cmd_export",
+        "importJSON": "_cmd_import_json",
+        "importJSONtaskTemplateCopy": "_cmd_import_json_template",
+        "importJSONnoteTemplateCopy": "_cmd_import_note_json_template",
+        "bm": "_cmd_bulk_mark",
+        "bd": "_cmd_bulk_delete",
+        "bc": "_cmd_bulk_clear",
+        "stats": "_show_stats",
+        "update": "_cmd_update",
+        "undo": "_undo_last_action",
+        "week": "_show_week_view",
+        "overdue": "_show_overdue_view",
+        "schbar": "_show_schedule_bar",
+        "ai": "_cmd_ai",
+        "aii": "_cmd_aii_chat",
+        "highlight": "_show_highlight_picker",
+        "st": "_cmd_start_timer",
+        "preset": "_cmd_preset",
+        "ts": "_stop_timer", "timerStop": "_stop_timer",
+        "pt": "_cmd_pause_timer", "pauseTimer": "_cmd_pause_timer",
+        "rt": "_stop_timer", "resetTimer": "_stop_timer",
+        "sound": "_cmd_sound_toggle",
+        "sound on": "_cmd_sound_on",
+        "sound off": "_cmd_sound_off",
+        "su a": "_cmd_sort_urgency_asc",
+        "su d": "_cmd_sort_urgency_desc",
+        "sd a": "_cmd_sort_difficulty_asc",
+        "sd d": "_cmd_sort_difficulty_desc",
+        "sn a": "_cmd_sort_name_asc",
+        "sn d": "_cmd_sort_name_desc",
+        "sdl a": "_cmd_sort_deadline_asc",
+        "sdl d": "_cmd_sort_deadline_desc",
+        "sr": "_cmd_sort_reset",
+        "ftc": "_cmd_filter_tag_clear",
+    }
 
-        if cmd == "all":
-            if self._selected_archive_id is not None:
-                self._all_tasks_mode = True
-                self._level = Level.TASKS
+    _CMD_PREFIX_DISPATCH: list[tuple[str, str]] = [
+        ("depends ", "_cmd_depends_add"),
+        ("undepends ", "_cmd_depends_remove"),
+        ("subadd ", "_cmd_subtask_add"),
+        ("subrm ", "_cmd_subtask_remove"),
+        ("subdone ", "_cmd_subtask_toggle"),
+        ("subedit ", "_cmd_subtask_edit"),
+        ("snooze ", "_cmd_snooze"),
+        ("select ", "_cmd_select"),
+        ("mv ", "_cmd_move"),
+        ("qa ", "_cmd_quick_add"),
+        ("export ", "_cmd_export_path"),
+        ("exportCurrent", "_cmd_export_current"),
+        ("import ", "_cmd_import"),
+        ("importExported ", "_cmd_import_exported"),
+        ("importJSON ", "_cmd_import_json_path"),
+        ("bt ", "_cmd_bulk_tag"),
+        ("bv ", "_cmd_bulk_move"),
+        ("aii ", "_cmd_aii_subcmd"),
+        ("gs ", "_cmd_global_search"),
+        ("tag ", "_cmd_tag_add"),
+        ("untag ", "_cmd_tag_remove"),
+        ("ft ", "_cmd_filter_tag"),
+        ("st ", "_cmd_start_timer_preset"),
+        ("preset ", "_cmd_preset"),
+        ("sound ", "_cmd_sound_custom"),
+    ]
+
+    def _handle_command(self, cmd: str) -> None:
+        method_name = self._CMD_DISPATCH.get(cmd)
+        if method_name:
+            getattr(self, method_name)()
+            return
+        for prefix, method_name in self._CMD_PREFIX_DISPATCH:
+            if cmd.startswith(prefix):
+                getattr(self, method_name)(cmd)
+                return
+        self._focus_body()
+        if handler:
+            handler()
+            return
+        for prefix, handler_fn in self._CMD_PREFIX_DISPATCH.items():
+            if cmd.startswith(prefix):
+                handler_fn(cmd)
+                return
+        self._focus_body()
+
+    def _cmd_quit(self) -> None:
+        raise urwid.ExitMainLoop()
+
+    def _cmd_toggle_finished(self) -> None:
+        self._show_finished = not self._show_finished
+        self._refresh_list()
+
+    def _cmd_hide_finished(self) -> None:
+        self._show_finished = False
+        self._refresh_list()
+
+    def _cmd_pin(self) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                task_cmds.edit_task(sid, pinned=1)
+                self._set_timed_caption("done", "Task pinned ")
                 self._refresh_list()
-            return
-        if cmd == "mu":
-            if self._level == Level.TASKS and not self._sort_field:
-                sid = self._get_selected_id()
-                if sid is not None and task_cmds.move_task_up(sid):
-                    self._refresh_list()
-                    self._show_detail()
-            return
-        if cmd == "md":
-            if self._level == Level.TASKS and not self._sort_field:
-                sid = self._get_selected_id()
-                if sid is not None and task_cmds.move_task_down(sid):
-                    self._refresh_list()
-                    self._show_detail()
-            return
-        if cmd.startswith("mv "):
-            try:
-                target_id = int(cmd.split(" ", 1)[1])
-                sid = self._get_selected_id()
-                if sid is None:
-                    return
-                if self._level == Level.TASKS:
-                    if task_cmds.move_task(sid, target_id):
-                        self._set_timed_caption("done", "Moved task ")
-                        self._refresh_list()
-                elif self._level == Level.DIRECTORIES:
-                    if directory_cmds.move_directory(sid, target_id):
-                        self._set_timed_caption("done", "Moved directory ")
-                        self._refresh_list()
-            except ValueError:
-                pass
-            return
-        if cmd.startswith("qa "):
-            if self._level == Level.TASKS and self._selected_directory_id is not None:
-                rest = cmd[3:].strip()
-                name = rest
-                urgency = 1
-                difficulty = 1
-                time_dedicated = 0
-                deadline = "none"
-                for token in rest.split():
-                    if token.startswith("u:") or token.startswith("U:"):
-                        try:
-                            urgency = int(token[2:])
-                        except ValueError:
-                            pass
-                    elif token.startswith("d:") or token.startswith("D:"):
-                        try:
-                            difficulty = int(token[2:])
-                        except ValueError:
-                            pass
-                    elif token.startswith("t:") or token.startswith("T:"):
-                        try:
-                            time_dedicated = int(token[2:])
-                        except ValueError:
-                            pass
-                    elif token.startswith("dl:") or token.startswith("DL:"):
-                        try:
-                            deadline = task_cmds._normalize_date(token[3:])
-                        except ValueError:
-                            deadline = "none"
-                # Strip tokens from name
-                for token in rest.split():
-                    if any(token.startswith(p) for p in ("u:", "U:", "d:", "D:", "t:", "T:", "dl:", "DL:")):
-                        name = name.replace(token, "", 1).strip()
-                if name:
-                    task_cmds.create_task(
-                        self._selected_directory_id, name,
-                        urgency=urgency, difficulty=difficulty,
-                        time_dedicated=time_dedicated, deadline=deadline,
-                    )
-                    self._set_timed_caption("done", "Task added ")
-                    self._refresh_list()
-            return
-        if cmd.startswith("export"):
-            parts = cmd.split(" ", 1)
-            path = parts[1].strip() if len(parts) > 1 else "/tmp/taskwatch_export.json"
-            if io_cmds.export_data(path):
-                self._set_timed_caption("done", f"Exported to {path} ", 3)
-            else:
-                self._set_timed_caption("error", "Export failed ", 3)
-            return
-        if cmd.startswith("import "):
-            path = cmd.split(" ", 1)[1].strip()
-            result = io_cmds.import_data(path)
-            self._set_timed_caption("done" if "failed" not in result else "error", f"{result} ", 3)
-            self._refresh_list()
-            return
-        if cmd == "importJSON":
-            if self._level == Level.NOTES:
-                if self._selected_task_id is None:
-                    self._set_timed_caption("error", "No task selected ")
-                    return
-                self._show_import_notes_json_panel()
-                return
-            if self._selected_directory_id is None:
-                self._set_timed_caption("error", "Select a directory first ")
-                return
-            self._show_import_json_panel()
-            return
-        if cmd.startswith("importJSON "):
-            if self._level == Level.NOTES:
-                if self._selected_task_id is None:
-                    self._set_timed_caption("error", "No task selected ")
-                    return
-                path = cmd.split(" ", 1)[1].strip()
-                self._cmd_import_note_json_file(path)
-                return
-            if self._selected_directory_id is None:
-                self._set_timed_caption("error", "Select a directory first ")
-                return
-            path = cmd.split(" ", 1)[1].strip()
-            self._cmd_import_json_file(path)
-            return
-        if cmd == "importJSONtaskTemplateCopy":
-            self._cmd_import_json_template()
-            return
-        if cmd == "importJSONnoteTemplateCopy":
-            self._cmd_import_note_json_template()
-            return
-        if cmd == "bm":
-            if self._level == Level.TASKS and self._bulk_selection:
-                for tid in list(self._bulk_selection):
-                    task_cmds.mark_done(tid)
-                self._bulk_selection.clear()
+
+    def _cmd_unpin(self) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                task_cmds.edit_task(sid, pinned=0)
+                self._set_timed_caption("done", "Task unpinned ")
                 self._refresh_list()
-            return
-        if cmd == "bd":
-            if self._level == Level.TASKS and self._bulk_selection:
-                self._start_wizard(
-                    f"Delete {len(self._bulk_selection)} tasks? (y/n): ",
-                    self._wiz_bulk_delete,
-                )
-            return
-        if cmd.startswith("bt "):
-            if self._level == Level.TASKS and self._bulk_selection:
-                tag_name = cmd.split(" ", 1)[1].strip()
-                if tag_name:
-                    for tid in list(self._bulk_selection):
-                        tag_cmds.add_tag_to_task(tid, tag_name)
-                    self._bulk_selection.clear()
-                    self._refresh_list()
-            return
-        if cmd.startswith("bv "):
-            if self._level == Level.TASKS and self._bulk_selection:
+
+    def _cmd_depends_add(self, cmd: str) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
                 try:
-                    target_dir = int(cmd.split(" ", 1)[1])
-                    for tid in list(self._bulk_selection):
-                        task_cmds.move_task(tid, target_dir)
-                    self._bulk_selection.clear()
+                    dep_id = int(cmd.split(" ", 1)[1])
+                    task_cmds.add_dependency(sid, dep_id)
+                    self._set_timed_caption("done", f"Dependency on task {dep_id} added ")
                     self._refresh_list()
+                except ValueError as e:
+                    self._set_timed_caption("error", f"{e} ")
+
+    def _cmd_depends_remove(self, cmd: str) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                try:
+                    dep_id = int(cmd.split(" ", 1)[1])
+                    if task_cmds.remove_dependency(sid, dep_id):
+                        self._set_timed_caption("done", f"Dependency on task {dep_id} removed ")
+                    else:
+                        self._set_timed_caption("error", "Dependency not found ")
                 except ValueError:
                     pass
+                self._refresh_list()
+
+    def _cmd_subtask_add(self, cmd: str) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                content = cmd.split(" ", 1)[1].strip()
+                if content:
+                    subtask_cmds.create_subtask(sid, content)
+                    self._set_timed_caption("done", "Subtask added ")
+                    self._show_detail()
+
+    def _cmd_subtask_remove(self, cmd: str) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                try:
+                    nth = int(cmd.split(" ", 1)[1])
+                    subs = subtask_cmds.list_subtasks(sid)
+                    if 1 <= nth <= len(subs):
+                        sub = subs[nth - 1]
+                        subtask_cmds.delete_subtask(sub.id)
+                        self._set_timed_caption("done", f"Subtask {nth} removed ")
+                        self._show_detail()
+                    else:
+                        self._set_timed_caption("error", f"Subtask #{nth} not found ")
+                except ValueError:
+                    pass
+
+    def _cmd_subtask_toggle(self, cmd: str) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                try:
+                    nth = int(cmd.split(" ", 1)[1])
+                    subs = subtask_cmds.list_subtasks(sid)
+                    if 1 <= nth <= len(subs):
+                        sub = subs[nth - 1]
+                        if sub.finished:
+                            subtask_cmds.mark_not_done(sub.id)
+                        else:
+                            subtask_cmds.mark_done(sub.id)
+                        self._set_timed_caption("done", f"Subtask {nth} toggled ")
+                        self._show_detail()
+                    else:
+                        self._set_timed_caption("error", f"Subtask #{nth} not found ")
+                except ValueError:
+                    pass
+
+    def _cmd_subtask_edit(self, cmd: str) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                rest = cmd[len("subedit "):].strip()
+                space_idx = rest.find(" ")
+                if space_idx > 0:
+                    try:
+                        nth = int(rest[:space_idx])
+                        new_content = rest[space_idx + 1:]
+                        subs = subtask_cmds.list_subtasks(sid)
+                        if 1 <= nth <= len(subs):
+                            subtask_cmds.update_subtask(subs[nth - 1].id, new_content)
+                            self._set_timed_caption("done", f"Subtask {nth} updated ")
+                            self._show_detail()
+                        else:
+                            self._set_timed_caption("error", f"Subtask #{nth} not found ")
+                    except ValueError:
+                        self._set_timed_caption("error", "Usage: subedit <#> <new content> ")
+                else:
+                    self._set_timed_caption("error", "Usage: subedit <#> <new content> ")
+
+    def _cmd_snooze(self, cmd: str) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                try:
+                    days = int(cmd.split(" ", 1)[1])
+                    task = task_cmds.get_task(sid)
+                    if task and task.deadline != "none":
+                        from datetime import datetime, timedelta
+                        new_deadline = (datetime.strptime(task.deadline, "%Y-%m-%d") + timedelta(days=days)).strftime("%Y-%m-%d")
+                        task_cmds.edit_task(sid, deadline=new_deadline)
+                        self._set_timed_caption("done", f"Deadline bumped {days}d ")
+                    else:
+                        self._set_timed_caption("error", "Task has no deadline ")
+                except ValueError:
+                    pass
+                self._refresh_list()
+
+    def _cmd_duplicate(self) -> None:
+        if self._level == Level.TASKS:
+            sid = self._get_selected_id()
+            if sid is not None:
+                task = task_cmds.get_task(sid)
+                if task:
+                    task_cmds.create_task(
+                        task.directory_id, task.name + " (copy)",
+                        description=task.description, deadline=task.deadline,
+                        urgency=task.urgency, difficulty=task.difficulty,
+                        time_dedicated=task.time_dedicated,
+                        repeatable=task.repeatable, repeatable_type=task.repeatable_type,
+                        has_to_be_completed_to_repeat=task.has_to_be_completed_to_repeat,
+                        repeat_on_specific_day=task.repeat_on_specific_day,
+                    )
+                    self._set_timed_caption("done", "Task duplicated ")
+                    self._refresh_list()
+
+    def _cmd_select(self, cmd: str) -> None:
+        if self._level == Level.TASKS:
+            arg = cmd.split(" ", 1)[1].strip() if " " in cmd else ""
+            conn = db_mod.get_conn()
+            today_str = date.today().isoformat()
+            if arg == "overdue":
+                rows = conn.execute(
+                    "SELECT id FROM tasks WHERE finished = 0 AND deadline != 'none' AND deadline < ?",
+                    (today_str,),
+                ).fetchall()
+            elif arg == "due today":
+                rows = conn.execute(
+                    "SELECT id FROM tasks WHERE finished = 0 AND deadline = ?",
+                    (today_str,),
+                ).fetchall()
+            elif arg == "pinned":
+                rows = conn.execute(
+                    "SELECT id FROM tasks WHERE pinned = 1",
+                ).fetchall()
+            else:
+                self._set_timed_caption("error", "Usage: select overdue | due today | pinned ")
+                return
+            self._bulk_selection = {r["id"] for r in rows}
+            self._set_timed_caption("done", f"Selected {len(self._bulk_selection)} tasks ")
+            self._refresh_list()
+
+    def _cmd_cancel(self) -> None:
+        self._prompt_handler = None
+        self._wizard_stack.clear()
+        self._current_prompt = ": "
+        self._cmd.set_caption(": ")
+        self._bulk_selection.clear()
+        self._refresh_list()
+        self._focus_body()
+
+    def _cmd_all_tasks(self) -> None:
+        if self._selected_archive_id is not None:
+            self._all_tasks_mode = True
+            self._level = Level.TASKS
+            self._refresh_list()
+
+    def _cmd_move_up(self) -> None:
+        if self._level == Level.TASKS and not self._sort_field:
+            sid = self._get_selected_id()
+            if sid is not None and task_cmds.move_task(sid, "up"):
+                self._refresh_list()
+
+    def _cmd_move_down(self) -> None:
+        if self._level == Level.TASKS and not self._sort_field:
+            sid = self._get_selected_id()
+            if sid is not None and task_cmds.move_task(sid, "down"):
+                self._refresh_list()
+
+    def _cmd_move(self, cmd: str) -> None:
+        try:
+            target_id = int(cmd.split(" ", 1)[1])
+            sid = self._get_selected_id()
+            if sid is None:
+                return
+            if self._level == Level.TASKS:
+                if task_cmds.move_task(sid, target_id):
+                    self._set_timed_caption("done", "Moved task ")
+                    self._refresh_list()
+            elif self._level == Level.DIRECTORIES:
+                if directory_cmds.move_directory(sid, target_id):
+                    self._set_timed_caption("done", "Moved directory ")
+                    self._refresh_list()
+        except ValueError:
+            pass
+
+    def _cmd_quick_add(self, cmd: str) -> None:
+        if self._level == Level.TASKS and self._selected_directory_id is not None:
+            rest = cmd[3:].strip()
+            name = rest
+            urgency = 1
+            difficulty = 1
+            time_dedicated = 0
+            deadline = "none"
+            for token in rest.split():
+                if token.startswith("u:") or token.startswith("U:"):
+                    try:
+                        urgency = int(token[2:])
+                    except ValueError:
+                        pass
+                elif token.startswith("d:") or token.startswith("D:"):
+                    try:
+                        difficulty = int(token[2:])
+                    except ValueError:
+                        pass
+                elif token.startswith("t:") or token.startswith("T:"):
+                    try:
+                        time_dedicated = int(token[2:])
+                    except ValueError:
+                        pass
+                elif token.startswith("dl:") or token.startswith("DL:"):
+                    try:
+                        deadline = task_cmds._normalize_date(token[3:])
+                    except ValueError:
+                        deadline = "none"
+            for token in rest.split():
+                if any(token.startswith(p) for p in ("u:", "U:", "d:", "D:", "t:", "T:", "dl:", "DL:")):
+                    name = name.replace(token, "", 1).strip()
+            if name:
+                task_cmds.create_task(
+                    self._selected_directory_id, name,
+                    urgency=urgency, difficulty=difficulty,
+                    time_dedicated=time_dedicated, deadline=deadline,
+                )
+                self._set_timed_caption("done", "Task added ")
+                self._refresh_list()
+
+    def _cmd_export(self) -> None:
+        if io_cmds.export_data("/tmp/taskwatch_export.json"):
+            self._set_timed_caption("done", "Exported to /tmp/taskwatch_export.json ", 3)
+        else:
+            self._set_timed_caption("error", "Export failed ", 3)
+
+    def _cmd_export_path(self, cmd: str) -> None:
+        path = cmd.split(" ", 1)[1].strip()
+        if io_cmds.export_data(path):
+            self._set_timed_caption("done", f"Exported to {path} ", 3)
+        else:
+            self._set_timed_caption("error", "Export failed ", 3)
+
+    def _cmd_export_current(self, cmd: str) -> None:
+        parts = cmd.split(" ", 1)
+        path = parts[1].strip() if len(parts) > 1 else None
+        sid = self._get_selected_id()
+        if sid is None:
+            self._set_timed_caption("error", "Nothing selected ")
             return
-        if cmd == "bc":
+        if io_cmds.export_current_item(self._level.name, sid, path):
+            out = path or "/tmp/taskwatch_export_current.json"
+            self._set_timed_caption("done", f"Exported to {out} ", 3)
+        else:
+            self._set_timed_caption("error", "Export current failed ")
+
+    def _cmd_import(self, cmd: str) -> None:
+        path = cmd.split(" ", 1)[1].strip()
+        result = io_cmds.import_data(path)
+        self._set_timed_caption("done" if "failed" not in result else "error", f"{result} ", 3)
+        self._refresh_list()
+
+    def _cmd_import_exported(self, cmd: str) -> None:
+        path = cmd.split(" ", 1)[1].strip()
+        result = io_cmds.import_exported_item(
+            path,
+            self._level.name,
+            self._selected_archive_id,
+            self._selected_directory_id,
+            self._selected_task_id,
+        )
+        ok = "failed" not in result.lower() and "error" not in result.lower()
+        self._set_timed_caption("done" if ok else "error", f"{result} ", 3)
+        self._refresh_list()
+
+    def _cmd_import_json(self) -> None:
+        if self._level == Level.NOTES:
+            if self._selected_task_id is None:
+                self._set_timed_caption("error", "No task selected ")
+                return
+            self._show_import_notes_json_panel()
+            return
+        if self._selected_directory_id is None:
+            self._set_timed_caption("error", "Select a directory first ")
+            return
+        self._show_import_json_panel()
+
+    def _cmd_import_json_path(self, cmd: str) -> None:
+        if self._level == Level.NOTES:
+            if self._selected_task_id is None:
+                self._set_timed_caption("error", "No task selected ")
+                return
+            path = cmd.split(" ", 1)[1].strip()
+            self._cmd_import_note_json_file(path)
+            return
+        if self._selected_directory_id is None:
+            self._set_timed_caption("error", "Select a directory first ")
+            return
+        path = cmd.split(" ", 1)[1].strip()
+        self._cmd_import_json_file(path)
+
+    def _cmd_bulk_mark(self) -> None:
+        if self._level == Level.TASKS and self._bulk_selection:
+            for tid in list(self._bulk_selection):
+                task_cmds.mark_done(tid)
             self._bulk_selection.clear()
             self._refresh_list()
-            return
 
-        if cmd == "stats":
-            self._show_stats()
-            return
-        if cmd == "update":
-            self._cmd_update()
-            return
-        if cmd == "undo":
-            self._undo_last_action()
-            return
-        if cmd == "week":
-            self._show_week_view()
-            return
-        if cmd == "overdue":
-            self._show_overdue_view()
-            return
-        if cmd == "schbar":
-            self._show_schedule_bar()
-            return
-        if cmd == "ai":
-            self._cmd_ai()
-            return
-        if cmd == "aii":
-            self._cmd_aii_chat()
-            return
-        if cmd.startswith("aii "):
-            self._handle_aii_subcmd(cmd[4:].strip())
-            return
-        if cmd == "highlight":
-            self._show_highlight_picker()
-            return
-        if cmd.startswith("gs "):
-            query = cmd.split(" ", 1)[1].strip()
-            if query:
-                self._show_global_search(query)
-            return
-        if cmd.startswith("tag "):
+    def _cmd_bulk_delete(self) -> None:
+        if self._level == Level.TASKS and self._bulk_selection:
+            self._start_wizard(
+                f"Delete {len(self._bulk_selection)} tasks? (y/n): ",
+                self._wiz_bulk_delete,
+            )
+
+    def _cmd_bulk_clear(self) -> None:
+        self._bulk_selection.clear()
+        self._refresh_list()
+
+    def _cmd_bulk_tag(self, cmd: str) -> None:
+        if self._level == Level.TASKS and self._bulk_selection:
             tag_name = cmd.split(" ", 1)[1].strip()
-            if tag_name and self._selected_task_id is not None:
-                tag_cmds.add_tag_to_task(self._selected_task_id, tag_name)
+            if tag_name:
+                for tid in list(self._bulk_selection):
+                    tag_cmds.add_tag_to_task(tid, tag_name)
+                self._bulk_selection.clear()
                 self._refresh_list()
-                self._show_detail()
-            return
-        if cmd.startswith("untag "):
-            tag_name = cmd.split(" ", 1)[1].strip()
-            if tag_name and self._selected_task_id is not None:
-                tag_cmds.remove_tag_from_task(self._selected_task_id, tag_name)
+
+    def _cmd_bulk_move(self, cmd: str) -> None:
+        if self._level == Level.TASKS and self._bulk_selection:
+            try:
+                target_dir = int(cmd.split(" ", 1)[1])
+                for tid in list(self._bulk_selection):
+                    task_cmds.move_task(tid, target_dir)
+                self._bulk_selection.clear()
                 self._refresh_list()
-                self._show_detail()
-            return
-        if cmd.startswith("ft ") and self._level == Level.TASKS:
+            except ValueError:
+                pass
+
+    def _cmd_aii_subcmd(self, cmd: str) -> None:
+        self._handle_aii_subcmd(cmd[4:].strip())
+
+    def _cmd_global_search(self, cmd: str) -> None:
+        query = cmd.split(" ", 1)[1].strip()
+        if query:
+            self._show_global_search(query)
+
+    def _cmd_tag_add(self, cmd: str) -> None:
+        tag_name = cmd.split(" ", 1)[1].strip()
+        if tag_name and self._selected_task_id is not None:
+            tag_cmds.add_tag_to_task(self._selected_task_id, tag_name)
+            self._refresh_list()
+
+    def _cmd_tag_remove(self, cmd: str) -> None:
+        tag_name = cmd.split(" ", 1)[1].strip()
+        if tag_name and self._selected_task_id is not None:
+            tag_cmds.remove_tag_from_task(self._selected_task_id, tag_name)
+            self._refresh_list()
+
+    def _cmd_filter_tag(self, cmd: str) -> None:
+        if self._level == Level.TASKS:
             self._filter_tag = cmd.split(" ", 1)[1].strip()
             self._refresh_list()
-            self._show_detail()
-            return
-        if cmd in ("ftc",):
-            self._filter_tag = None
-            if self._level == Level.TASKS:
-                self._refresh_list()
-                self._show_detail()
-            return
 
-        if cmd == "st":
-            if self._selected_task_id is not None:
-                t = task_cmds.get_task(self._selected_task_id)
-                if t:
-                    self._start_timer_for_task(t)
-            return
-        if cmd.startswith("st "):
-            arg = cmd.split(" ", 1)[1]
-            if arg in self._timer_presets:
-                preset = self._timer_presets[arg]
-                self._start_timer_from_preset(preset, name=arg)
-            else:
-                try:
-                    mins = int(arg)
-                    if mins > 0:
-                        self._start_timer(mins)
-                except ValueError:
-                    self._set_timed_caption("error", f"Unknown preset '{arg}' ")
-            return
-        if cmd in ("preset",) or cmd.startswith("preset "):
-            self._cmd_preset(cmd)
-            return
-        if cmd in ("ts", "timerStop"):
-            self._stop_timer()
-            return
-        if cmd in ("pt", "pauseTimer"):
-            self._timer_paused = not self._timer_paused
-            self._write_timer_state({"paused": self._timer_paused})
-            self._update_clock_display()
-            return
-        if cmd in ("rt", "resetTimer"):
-            self._stop_timer()
-            return
-        if cmd == "sound":
-            self._cmd_sound_toggle()
-            return
-        if cmd == "sound on":
-            self._cmd_sound_set_enabled(True)
-            return
-        if cmd == "sound off":
-            self._cmd_sound_set_enabled(False)
-            return
-        if cmd.startswith("sound "):
-            self._cmd_sound_custom(cmd[6:])
-            return
+    def _cmd_filter_tag_clear(self) -> None:
+        self._filter_tag = None
+        if self._level == Level.TASKS:
+            self._refresh_list()
 
-        if cmd in ("su a", "su d"):
-            self._sort_field = "urgency"
-            self._sort_dir = "asc" if cmd == "su a" else "desc"
-            if self._level == Level.TASKS:
-                self._refresh_list()
-            return
-        if cmd in ("sd a", "sd d"):
-            self._sort_field = "difficulty"
-            self._sort_dir = "asc" if cmd == "sd a" else "desc"
-            if self._level == Level.TASKS:
-                self._refresh_list()
-            return
-        if cmd in ("sn a", "sn d"):
-            self._sort_field = "name"
-            self._sort_dir = "asc" if cmd == "sn a" else "desc"
-            if self._level == Level.TASKS:
-                self._refresh_list()
-            return
-        if cmd in ("sdl a", "sdl d"):
-            self._sort_field = "deadline"
-            self._sort_dir = "asc" if cmd == "sdl a" else "desc"
-            if self._level == Level.TASKS:
-                self._refresh_list()
-            return
-        if cmd == "sr":
-            self._sort_field = None
-            self._sort_dir = "asc"
-            if self._level == Level.TASKS:
-                self._refresh_list()
-            return
+    def _cmd_start_timer(self) -> None:
+        if self._selected_task_id is not None:
+            t = task_cmds.get_task(self._selected_task_id)
+            if t:
+                self._start_timer_for_task(t)
 
-        self._focus_body()
+    def _cmd_start_timer_preset(self, cmd: str) -> None:
+        arg = cmd.split(" ", 1)[1]
+        if arg in self._timer_presets:
+            preset = self._timer_presets[arg]
+            self._start_timer_from_preset(preset, name=arg)
+        else:
+            try:
+                mins = int(arg)
+                if mins > 0:
+                    self._start_timer(mins)
+            except ValueError:
+                self._set_timed_caption("error", f"Unknown preset '{arg}' ")
+
+    def _cmd_pause_timer(self) -> None:
+        self._timer_paused = not self._timer_paused
+        self._write_timer_state({"paused": self._timer_paused})
+        self._update_clock_display()
+
+    def _cmd_sound_on(self) -> None:
+        self._cmd_sound_set_enabled(True)
+
+    def _cmd_sound_off(self) -> None:
+        self._cmd_sound_set_enabled(False)
+
+    def _cmd_sort_urgency_asc(self) -> None:
+        self._sort_field = "urgency"
+        self._sort_dir = "asc"
+        if self._level == Level.TASKS:
+            self._refresh_list()
+
+    def _cmd_sort_urgency_desc(self) -> None:
+        self._sort_field = "urgency"
+        self._sort_dir = "desc"
+        if self._level == Level.TASKS:
+            self._refresh_list()
+
+    def _cmd_sort_difficulty_asc(self) -> None:
+        self._sort_field = "difficulty"
+        self._sort_dir = "asc"
+        if self._level == Level.TASKS:
+            self._refresh_list()
+
+    def _cmd_sort_difficulty_desc(self) -> None:
+        self._sort_field = "difficulty"
+        self._sort_dir = "desc"
+        if self._level == Level.TASKS:
+            self._refresh_list()
+
+    def _cmd_sort_name_asc(self) -> None:
+        self._sort_field = "name"
+        self._sort_dir = "asc"
+        if self._level == Level.TASKS:
+            self._refresh_list()
+
+    def _cmd_sort_name_desc(self) -> None:
+        self._sort_field = "name"
+        self._sort_dir = "desc"
+        if self._level == Level.TASKS:
+            self._refresh_list()
+
+    def _cmd_sort_deadline_asc(self) -> None:
+        self._sort_field = "deadline"
+        self._sort_dir = "asc"
+        if self._level == Level.TASKS:
+            self._refresh_list()
+
+    def _cmd_sort_deadline_desc(self) -> None:
+        self._sort_field = "deadline"
+        self._sort_dir = "desc"
+        if self._level == Level.TASKS:
+            self._refresh_list()
+
+    def _cmd_sort_reset(self) -> None:
+        self._sort_field = None
+        self._sort_dir = "asc"
+        if self._level == Level.TASKS:
+            self._refresh_list()
 
     def _cmd_add(self) -> None:
         if self._level == Level.ARCHIVES:
@@ -2655,7 +2695,6 @@ class TaskWatchTUI:
             suffix = f" \U0001f525 {streak}d" if streak > 1 else ""
             self._set_timed_caption("done", f"{phrase}{suffix} ")
         self._refresh_list()
-        self._show_detail()
 
     def _enter_search_mode(self) -> None:
         if self._prompt_handler is not None:
@@ -2673,14 +2712,21 @@ class TaskWatchTUI:
         self._current_prompt = ("standout", "\u276f ")
         self._cmd.set_caption(("standout", "\u276f "))
         self._cmd.set_edit_text("")
+        if self._search_debounce_alarm is not None:
+            self._loop.remove_alarm(self._search_debounce_alarm)
+            self._search_debounce_alarm = None
         self._refresh_list()
-        self._show_detail()
         self._focus_body()
 
     def _on_search_change(self, text: str) -> None:
         self._filter_text = text
+        if self._search_debounce_alarm is not None:
+            self._loop.remove_alarm(self._search_debounce_alarm)
+        self._search_debounce_alarm = self._loop.set_alarm_in(0.2, self._do_search_refresh)
+
+    def _do_search_refresh(self, loop: object, data: object) -> None:
+        self._search_debounce_alarm = None
         self._refresh_list()
-        self._show_detail()
 
     def _apply_search(self) -> None:
         self._in_search_mode = False
@@ -2990,9 +3036,8 @@ class TaskWatchTUI:
             raw = [("head", "  Global Search\n\n"), ("dim", "  No tasks match your query.")]
         else:
             raw = [("head", f"  Global Search: {query}\n\n")]
-            for i, r in enumerate(results, 1):
-                task = r["task"]
-                path = f"{r['arch_name']} \u25b8 {r['dir_name']}"
+            for i, (task, dir_name, arch_name) in enumerate(results, 1):
+                path = f"{arch_name} \u25b8 {dir_name}"
                 status = "\u2713" if task.finished else "\u25cb"
                 raw.append(f"  {i}. {status} {task.name}")
                 raw.append(f"      {path}")
@@ -3812,7 +3857,6 @@ class TaskWatchTUI:
         if success:
             self._set_timed_caption("done", f"Undone: {action} ")
         self._refresh_list()
-        self._show_detail()
 
     def _check_and_notify_deadlines(self) -> None:
         if not self._notify_deadlines_enabled:
@@ -3869,7 +3913,6 @@ class TaskWatchTUI:
             self._current_prompt = ("standout", "\u276f ")
             self._cmd.set_caption(("standout", "\u276f "))
         self._refresh_list()
-        self._show_detail()
         try:
             calcurse_cmds.sync_to_calcurse()
         except Exception:
@@ -3943,10 +3986,7 @@ class TaskWatchTUI:
                     "class": f"timer-{phase.lower()}",
                     "tooltip": f"Timer: {phase} ({time_str} remaining)",
                 }
-            tmp = timer_path.with_suffix(".tmp")
-            with open(tmp, "w") as f:
-                json.dump(data, f)
-            tmp.rename(timer_path)
+            timer_mod.atomic_write_json(timer_path, data)
         except OSError:
             pass
 
@@ -3968,10 +4008,7 @@ class TaskWatchTUI:
             except (OSError, json.JSONDecodeError):
                 pass
             current.update(updates)
-            tmp = self._timer_state_path.with_suffix(".tmp")
-            with open(tmp, "w") as f:
-                json.dump(current, f)
-            tmp.rename(self._timer_state_path)
+            timer_mod.atomic_write_json(self._timer_state_path, current)
         except OSError:
             pass
 
@@ -4255,14 +4292,14 @@ class TaskWatchTUI:
                 self._set_timed_caption("error", "Work and laps must be > 0")
                 return
             self._timer_presets[name] = {"prep": prep, "work": work, "break": break_, "laps": laps}
-            self._write_presets_to_config()
+            timer_mod.write_presets(self._timer_presets)
             total = prep + work * laps + break_ * max(0, laps - 1)
-            self._set_timed_caption("done", f"Preset '{name}' added ({_fmt_preset_val(total)}m)")
+            self._set_timed_caption("done", f"Preset '{name}' added ({timer_mod.fmt_timer_val(total)}m)")
         elif parts[1] == "remove" and len(parts) == 3:
             name = parts[2]
             if name in self._timer_presets:
                 del self._timer_presets[name]
-                self._write_presets_to_config()
+                timer_mod.write_presets(self._timer_presets)
                 self._set_timed_caption("done", f"Preset '{name}' removed")
             else:
                 self._set_timed_caption("error", f"Preset '{name}' not found")
@@ -4279,9 +4316,9 @@ class TaskWatchTUI:
             total = p["prep"] + p["work"] * p["laps"] + p["break"] * max(0, p["laps"] - 1)
             line = (
                 f"  {name}: "
-                f"{_fmt_preset_val(p['prep'])} + {_fmt_preset_val(p['work'])} "
-                f"+ {_fmt_preset_val(p['break'])} \u00d7 {p['laps']}"
-                f"  = {_fmt_preset_val(total)}m"
+                f"{timer_mod.fmt_timer_val(p['prep'])} + {timer_mod.fmt_timer_val(p['work'])} "
+                f"+ {timer_mod.fmt_timer_val(p['break'])} \u00d7 {p['laps']}"
+                f"  = {timer_mod.fmt_timer_val(total)}m"
             )
             walker.append(Text(line))
         walker.append(Text(""))
@@ -4293,22 +4330,6 @@ class TaskWatchTUI:
             valign="middle", height=("relative", 50),
         )
         self._loop.widget = overlay
-
-    def _write_presets_to_config(self) -> None:
-        cfg_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
-        existing_clean: list[str] = []
-        try:
-            for line in cfg_path.read_text().splitlines():
-                if not line.startswith("TIMER_PRESET:"):
-                    existing_clean.append(line)
-        except OSError:
-            pass
-        for name, p in sorted(self._timer_presets.items()):
-            existing_clean.append(
-                f"TIMER_PRESET:{name}={_fmt_preset_val(p['prep'])},{_fmt_preset_val(p['work'])},{_fmt_preset_val(p['break'])},{p['laps']}"
-            )
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
-        cfg_path.write_text("\n".join(existing_clean) + "\n")
 
     def _update_clock_display(self) -> None:
         now = datetime.now()
@@ -4334,10 +4355,7 @@ class TaskWatchTUI:
             m, s = divmod(m, 60)
             pause_ind = " \u23f8" if self._timer_paused else ""
             phase_ind = f"\u25b6 {phase}  " if phase else ""
-            if h:
-                self._clock_text.set_text(f"{phase_ind}\u23f1 {h:02d}:{m:02d}:{s:02d}{pause_ind}")
-            else:
-                self._clock_text.set_text(f"{phase_ind}\u23f1 {m:02d}:{s:02d}{pause_ind}")
+            self._clock_text.set_text(f"{phase_ind}\u23f1 {h:02d}:{m:02d}:{s:02d}{pause_ind}")
             self._clock_w.set_attr_map({None: attr})
         else:
             self._clock_text.set_text(now.strftime("%H:%M:%S"))
@@ -4422,7 +4440,6 @@ class TaskWatchTUI:
                 if self._sound_enabled:
                     _play_sound(self._sound_paths.get("done"))
                 self._refresh_list()
-                self._show_detail()
 
             self._tick_counter += 1
             if self._tick_counter % 60 == 0:
@@ -4816,7 +4833,7 @@ class GlobalSearchOverlay(WidgetWrap):
         tasks = task_cmds.search_tasks_global(q)
         if tasks:
             results.append((9999, Text([("head", "  Tasks")])))
-            for t, dir_name in tasks:
+            for t, dir_name, _ in tasks:
                 score = _fuzzy_score(q, t.name)[0] + 80
                 label = f"[{dir_name}] {t.name}" if dir_name else t.name
                 highlighted = _build_highlighted_text(label, q)

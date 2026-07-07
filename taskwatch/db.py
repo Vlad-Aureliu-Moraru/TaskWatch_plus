@@ -93,6 +93,22 @@ def get_conn() -> sqlite3.Connection:
     return _connection
 
 
+IDX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_tasks_directory_id ON tasks(directory_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_finished ON tasks(finished);
+CREATE INDEX IF NOT EXISTS idx_tasks_deadline ON tasks(deadline);
+CREATE INDEX IF NOT EXISTS idx_tasks_finished_deadline ON tasks(finished, deadline);
+CREATE INDEX IF NOT EXISTS idx_tasks_repeatable ON tasks(repeatable);
+CREATE INDEX IF NOT EXISTS idx_directories_archive_id ON directories(archive_id);
+CREATE INDEX IF NOT EXISTS idx_notes_task_id ON notes(task_id);
+CREATE INDEX IF NOT EXISTS idx_subtasks_task_id ON subtasks(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_tags_tag_id ON task_tags(tag_id);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_depends ON task_dependencies(depends_on_task_id);
+CREATE INDEX IF NOT EXISTS idx_timer_sessions_task_id ON timer_sessions(task_id);
+CREATE INDEX IF NOT EXISTS idx_timer_sessions_date ON timer_sessions(date);
+"""
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("ALTER TABLE tasks ADD COLUMN position INTEGER DEFAULT 0")
@@ -104,6 +120,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         pass
     _migrate_notes(conn)
     _migrate_dates(conn)
+    conn.executescript(IDX_SQL)
 
 
 def _migrate_notes(conn: sqlite3.Connection) -> None:

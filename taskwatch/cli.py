@@ -2,7 +2,6 @@ import argparse
 import json
 import sys
 import textwrap
-from pathlib import Path
 
 from . import (
     __version__,
@@ -817,63 +816,7 @@ def _handle_subtask(action: str, opts):
             sys.exit(1)
 
 
-_CONFIG_BASE = Path(__file__).resolve().parent.parent / "config"
 
-
-def _read_presets() -> dict[str, dict]:
-    presets: dict[str, dict] = {}
-    cfg = _CONFIG_BASE / "config.txt"
-    try:
-        for line in cfg.read_text().splitlines():
-            if line.startswith("TIMER_PRESET:"):
-                _, rest = line.split(":", 1)
-                if "=" in rest:
-                    name, val = rest.split("=", 1)
-                    name = name.strip()
-                    if "," in val:
-                        parts = val.split(",")
-                        if len(parts) == 4:
-                            try:
-                                presets[name] = {
-                                    "prep": float(parts[0]),
-                                    "work": float(parts[1]),
-                                    "break": float(parts[2]),
-                                    "laps": int(parts[3]),
-                                }
-                            except ValueError:
-                                pass
-                    else:
-                        try:
-                            mins = float(val)
-                            presets[name] = {"prep": 0.0, "work": mins, "break": 0.0, "laps": 1}
-                        except ValueError:
-                            pass
-    except (OSError, ValueError):
-        pass
-    return presets
-
-
-def _write_presets(presets: dict[str, dict]) -> None:
-    cfg = _CONFIG_BASE / "config.txt"
-    existing_clean: list[str] = []
-    try:
-        for line in cfg.read_text().splitlines():
-            if not line.startswith("TIMER_PRESET:"):
-                existing_clean.append(line)
-    except OSError:
-        pass
-    for name, p in sorted(presets.items()):
-        existing_clean.append(
-            f"TIMER_PRESET:{name}={_fmt_preset_val(p['prep'])},{_fmt_preset_val(p['work'])},{_fmt_preset_val(p['break'])},{p['laps']}"
-        )
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text("\n".join(existing_clean) + "\n")
-
-
-def _fmt_preset_val(v: float) -> str:
-    if v == int(v):
-        return str(int(v))
-    return f"{v:.2f}".rstrip("0").rstrip(".")
 
 
 def _handle_timer(action: str, opts):
@@ -889,15 +832,15 @@ def _handle_timer(action: str, opts):
         _timer_pause()
     elif action == "preset":
         if opts.preset_action == "list":
-            presets = _read_presets()
+            presets = timer.read_presets()
             if not presets:
                 print("No timer presets configured")
             else:
                 for name, p in sorted(presets.items()):
                     total = p["prep"] + p["work"] * p["laps"] + p["break"] * max(0, p["laps"] - 1)
-                    print(f"  {name}: {_fmt_display(p['prep'])} + {_fmt_display(p['work'])} + {_fmt_display(p['break'])} x {p['laps']} = {_fmt_display(total)}m")
+                    print(f"  {name}: {timer.fmt_timer_val(p['prep'])} + {timer.fmt_timer_val(p['work'])} + {timer.fmt_timer_val(p['break'])} x {p['laps']} = {timer.fmt_timer_val(total)}m")
         elif opts.preset_action == "add":
-            presets = _read_presets()
+            presets = timer.read_presets()
             try:
                 prep = timer.parse_time_string(opts.prep)
                 work = timer.parse_time_string(opts.work)
@@ -910,26 +853,21 @@ def _handle_timer(action: str, opts):
                 print("Error: work and laps must be > 0", file=sys.stderr)
                 sys.exit(1)
             presets[opts.name] = {"prep": prep, "work": work, "break": break_, "laps": laps}
-            _write_presets(presets)
+            timer.write_presets(presets)
             total = prep + work * laps + break_ * max(0, laps - 1)
-            print(f"Added preset '{opts.name}' ({_fmt_display(prep)} + {_fmt_display(work)} + {_fmt_display(break_)} x {laps} = {_fmt_display(total)}m)")
+            print(f"Added preset '{opts.name}' ({timer.fmt_timer_val(prep)} + {timer.fmt_timer_val(work)} + {timer.fmt_timer_val(break_)} x {laps} = {timer.fmt_timer_val(total)}m)")
         elif opts.preset_action == "remove":
-            presets = _read_presets()
+            presets = timer.read_presets()
             if opts.name in presets:
                 del presets[opts.name]
-                _write_presets(presets)
+                timer.write_presets(presets)
                 print(f"Removed preset '{opts.name}'")
             else:
                 print(f"Preset '{opts.name}' not found", file=sys.stderr)
                 sys.exit(1)
 
 
-def _fmt_display(v: float) -> str:
-    if v == 0:
-        return "0"
-    if v == int(v):
-        return str(int(v))
-    return f"{v:.2f}".rstrip("0").rstrip(".")
+
 
 
 def _handle_export(opts):
@@ -960,10 +898,7 @@ def _write_timer_state(updates: dict) -> None:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         current = _read_timer_state()
         current.update(updates)
-        tmp = TIMER_STATE_PATH.with_suffix(".tmp")
-        with open(tmp, "w") as f:
-            json.dump(current, f)
-        tmp.rename(TIMER_STATE_PATH)
+        timer.atomic_write_json(TIMER_STATE_PATH, current)
     except OSError:
         pass
 
@@ -971,8 +906,7 @@ def _write_timer_state(updates: dict) -> None:
 def _timer_stop() -> None:
     _write_timer_state({"stopped": True})
     try:
-        with open(TIMER_FILE_PATH, "w") as f:
-            json.dump(INACTIVE_DATA, f)
+        timer.atomic_write_json(TIMER_FILE_PATH, INACTIVE_DATA)
     except OSError:
         pass
     print("Timer stopped")

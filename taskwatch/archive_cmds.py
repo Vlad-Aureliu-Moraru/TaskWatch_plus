@@ -35,9 +35,7 @@ def rename_archive(archive_id: int, name: str) -> Archive | None:
 def get_archive(archive_id: int) -> Archive | None:
     conn = get_conn()
     row = conn.execute("SELECT id, name FROM archives WHERE id = ?", (archive_id,)).fetchone()
-    if row is None:
-        return None
-    return Archive(id=row["id"], name=row["name"])
+    return None if row is None else Archive(id=row["id"], name=row["name"])
 
 
 def delete_archive(archive_id: int) -> bool:

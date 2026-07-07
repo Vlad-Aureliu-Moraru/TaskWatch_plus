@@ -60,9 +60,7 @@ def get_note(note_id: int) -> Note | None:
         f"SELECT {_COLS} FROM notes WHERE id = ?",
         (note_id,),
     ).fetchone()
-    if row is None:
-        return None
-    return _row_to_note(row)
+    return None if row is None else _row_to_note(row)
 
 
 def delete_note(note_id: int) -> bool:

@@ -60,9 +60,7 @@ def get_directory(dir_id: int) -> Directory | None:
     row = conn.execute(
         "SELECT id, archive_id, name FROM directories WHERE id = ?", (dir_id,)
     ).fetchone()
-    if row is None:
-        return None
-    return Directory(id=row["id"], archive_id=row["archive_id"], name=row["name"])
+    return None if row is None else Directory(id=row["id"], archive_id=row["archive_id"], name=row["name"])
 
 
 def get_directory_defaults(directory_id: int) -> dict:

@@ -80,15 +80,20 @@ def _display_date(val: str) -> str:
         return val
 
 
-def relative_deadline(date_str: str) -> str:
+def _deadline_diff(date_str: str) -> int | None:
     if date_str in (None, "", "none"):
-        return ""
+        return None
     try:
         dt = datetime.strptime(date_str, "%Y-%m-%d").date()
     except (ValueError, TypeError):
+        return None
+    return (dt - date.today()).days
+
+
+def relative_deadline(date_str: str) -> str:
+    diff = _deadline_diff(date_str)
+    if diff is None:
         return ""
-    today = date.today()
-    diff = (dt - today).days
     if diff < 0:
         days = abs(diff)
         if days == 1:
@@ -117,6 +122,14 @@ def _validate_repeatable_type(val: str) -> str:
 VALID_ORDER_COLUMNS = {"urgency", "difficulty", "name", "deadline", "id", "time_dedicated"}
 
 
+def _order_clause(order_by: str | None, order_dir: str, prefix: str = "") -> str:
+    p = f"{prefix}." if prefix else ""
+    if order_by is not None and order_by in VALID_ORDER_COLUMNS:
+        dir_sql = "DESC" if order_dir.lower() == "desc" else "ASC"
+        return f"ORDER BY {p}{order_by} {dir_sql}"
+    return f"ORDER BY {p}pinned DESC, {p}position, {p}id"
+
+
 def list_tasks(directory_id: int | None = None,
                finished: bool | None = None,
                order_by: str | None = None,
@@ -133,13 +146,7 @@ def list_tasks(directory_id: int | None = None,
 
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-    if order_by is not None and order_by in VALID_ORDER_COLUMNS:
-        dir_sql = "DESC" if order_dir.lower() == "desc" else "ASC"
-        order_clause = f"ORDER BY {order_by} {dir_sql}"
-    else:
-        order_clause = "ORDER BY pinned DESC, position, id"
-
-    sql = f"SELECT * FROM tasks {where} {order_clause}"
+    sql = f"SELECT * FROM tasks {where} {_order_clause(order_by, order_dir)}"
     rows = conn.execute(sql, params).fetchall()
     return [_row_to_task(r) for r in rows]
 
@@ -148,6 +155,20 @@ def get_task(task_id: int) -> Task | None:
     conn = get_conn()
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return _row_to_task(row) if row else None
+
+
+def get_tasks_by_ids(task_ids: list[int]) -> dict[int, Task]:
+    if not task_ids:
+        return {}
+    conn = get_conn()
+    result: dict[int, Task] = {}
+    for r in conn.execute(
+        f"SELECT * FROM tasks WHERE id IN ({','.join('?' for _ in task_ids)})",
+        task_ids,
+    ):
+        t = _row_to_task(r)
+        result[t.id] = t
+    return result
 
 
 def create_task(
@@ -341,35 +362,29 @@ def advance_deadline(task: Task, reset_finished: bool = True) -> Task | None:
     return _row_to_task(row) if row else None
 
 
-def mark_done(task_id: int) -> Task | None:
-    today = date.today().isoformat()
+def set_task_finished(task_id: int, finished: bool) -> Task | None:
     conn = get_conn()
+    today = date.today().isoformat() if finished else "none"
     cur = conn.execute(
-        "UPDATE tasks SET finished = 1, finished_date = ? WHERE id = ?",
-        (today, task_id),
+        "UPDATE tasks SET finished = ?, finished_date = ? WHERE id = ?",
+        (1 if finished else 0, today, task_id),
     )
     conn.commit()
     if cur.rowcount == 0:
         return None
-
     task = get_task(task_id)
-    if task and task.repeatable and task.repeatable_type != "none":
+    if finished and task and task.repeatable and task.repeatable_type != "none":
         reset = task.deadline == "none"
         task = advance_deadline(task, reset_finished=reset)
-
     return task if task else None
 
 
+def mark_done(task_id: int) -> Task | None:
+    return set_task_finished(task_id, True)
+
+
 def mark_not_done(task_id: int) -> Task | None:
-    conn = get_conn()
-    cur = conn.execute(
-        "UPDATE tasks SET finished = 0, finished_date = 'none' WHERE id = ?",
-        (task_id,),
-    )
-    conn.commit()
-    if cur.rowcount == 0:
-        return None
-    return get_task(task_id)
+    return set_task_finished(task_id, False)
 
 
 def _advance_until_current(task: Task) -> bool:
@@ -498,6 +513,43 @@ def is_blocked(task_id: int) -> bool:
     return unfinished > 0
 
 
+def get_blocked_ids(task_ids: list[int]) -> set[int]:
+    if not task_ids:
+        return set()
+    conn = get_conn()
+    unfinished_ids = {
+        r["id"]
+        for r in conn.execute(
+            f"SELECT id FROM tasks WHERE id IN ({','.join('?' for _ in task_ids)}) AND finished = 0",
+            task_ids,
+        )
+    }
+    if not unfinished_ids:
+        return set()
+    deps: dict[int, list[int]] = {}
+    all_dep_ids: set[int] = set()
+    for r in conn.execute(
+        f"SELECT task_id, depends_on_task_id FROM task_dependencies WHERE task_id IN ({','.join('?' for _ in unfinished_ids)})",
+        list(unfinished_ids),
+    ):
+        deps.setdefault(r["task_id"], []).append(r["depends_on_task_id"])
+        all_dep_ids.add(r["depends_on_task_id"])
+    if not all_dep_ids:
+        return set()
+    unfinished_deps = {
+        r["id"]
+        for r in conn.execute(
+            f"SELECT id FROM tasks WHERE id IN ({','.join('?' for _ in all_dep_ids)}) AND finished = 0",
+            list(all_dep_ids),
+        )
+    }
+    return {
+        tid
+        for tid, dep_list in deps.items()
+        if any(did in unfinished_deps for did in dep_list)
+    }
+
+
 def get_overdue_tasks() -> list[Task]:
     today_str = date.today().isoformat()
     conn = get_conn()
@@ -516,28 +568,6 @@ def get_tasks_due_on(date_str: str) -> list[Task]:
     ).fetchall()
     return [_row_to_task(r) for r in rows]
 
-
-def search_tasks_global(query: str) -> list[dict]:
-    conn = get_conn()
-    pattern = f"%{query}%"
-    rows = conn.execute(
-        """SELECT t.*, d.name AS dir_name, a.name AS arch_name
-           FROM tasks t
-           JOIN directories d ON t.directory_id = d.id
-           JOIN archives a ON d.archive_id = a.id
-           WHERE t.name LIKE ?
-           ORDER BY t.deadline""",
-        (pattern,),
-    ).fetchall()
-    result = []
-    for r in rows:
-        task = _row_to_task(r)
-        result.append({
-            "task": task,
-            "dir_name": r["dir_name"],
-            "arch_name": r["arch_name"],
-        })
-    return result
 
 
 def get_tasks_for_week() -> list[dict]:
@@ -582,38 +612,35 @@ def move_task(task_id: int, new_directory_id: int) -> Task | None:
     return get_task(task_id)
 
 
-def move_task_up(task_id: int) -> bool:
+def move_task(task_id: int, direction: str) -> bool:
     conn = get_conn()
     t = conn.execute("SELECT id, directory_id, position FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if t is None:
         return False
-    above = conn.execute(
-        "SELECT id, position FROM tasks WHERE directory_id = ? AND position < ? ORDER BY position DESC LIMIT 1",
-        (t["directory_id"], t["position"]),
-    ).fetchone()
-    if above is None:
+    if direction == "up":
+        neighbor = conn.execute(
+            "SELECT id, position FROM tasks WHERE directory_id = ? AND position < ? ORDER BY position DESC LIMIT 1",
+            (t["directory_id"], t["position"]),
+        ).fetchone()
+    else:
+        neighbor = conn.execute(
+            "SELECT id, position FROM tasks WHERE directory_id = ? AND position > ? ORDER BY position ASC LIMIT 1",
+            (t["directory_id"], t["position"]),
+        ).fetchone()
+    if neighbor is None:
         return False
-    conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (above["position"], task_id))
-    conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (t["position"], above["id"]))
+    conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (neighbor["position"], task_id))
+    conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (t["position"], neighbor["id"]))
     conn.commit()
     return True
+
+
+def move_task_up(task_id: int) -> bool:
+    return move_task(task_id, "up")
 
 
 def move_task_down(task_id: int) -> bool:
-    conn = get_conn()
-    t = conn.execute("SELECT id, directory_id, position FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if t is None:
-        return False
-    below = conn.execute(
-        "SELECT id, position FROM tasks WHERE directory_id = ? AND position > ? ORDER BY position ASC LIMIT 1",
-        (t["directory_id"], t["position"]),
-    ).fetchone()
-    if below is None:
-        return False
-    conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (below["position"], task_id))
-    conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (t["position"], below["id"]))
-    conn.commit()
-    return True
+    return move_task(task_id, "down")
 
 
 def list_all_tasks(archive_id: int,
@@ -627,16 +654,11 @@ def list_all_tasks(archive_id: int,
         conditions.append("t.finished = ?")
         params.append(1 if finished else 0)
     where = "WHERE " + " AND ".join(conditions)
-    if order_by is not None and order_by in VALID_ORDER_COLUMNS:
-        dir_sql = "DESC" if order_dir.lower() == "desc" else "ASC"
-        order_clause = f"ORDER BY t.{order_by} {dir_sql}"
-    else:
-        order_clause = "ORDER BY t.pinned DESC, t.position, t.id"
     rows = conn.execute(
         f"""SELECT t.*, d.name AS dir_name
             FROM tasks t
             JOIN directories d ON t.directory_id = d.id
-            {where} {order_clause}""",
+            {where} {_order_clause(order_by, order_dir, "t")}""",
         params,
     ).fetchall()
     result = []
@@ -646,19 +668,20 @@ def list_all_tasks(archive_id: int,
     return result
 
 
-def search_tasks_global(query: str, limit: int = 10) -> list[tuple[Task, str]]:
+def search_tasks_global(query: str, limit: int = 10) -> list[tuple[Task, str, str]]:
     conn = get_conn()
     like = f"%{query}%"
     rows = conn.execute("""
-        SELECT DISTINCT t.*, d.name AS dir_name
+        SELECT DISTINCT t.*, d.name AS dir_name, a.name AS arch_name
         FROM tasks t
         JOIN directories d ON t.directory_id = d.id
+        JOIN archives a ON d.archive_id = a.id
         WHERE LOWER(t.name) LIKE LOWER(?)
            OR LOWER(t.description) LIKE LOWER(?)
         ORDER BY t.pinned DESC, t.position, t.id
         LIMIT ?
     """, (like, like, limit)).fetchall()
-    return [(_row_to_task(r), r["dir_name"]) for r in rows]
+    return [(_row_to_task(r), r["dir_name"], r["arch_name"]) for r in rows]
 
 
 def get_announcements(archive_id: int | None = None) -> list[dict]:
@@ -695,23 +718,11 @@ def get_tags_for_task_display(task_id: int) -> str:
     return ", ".join(t.name for t in tags) if tags else ""
 
 
-def format_urgency_bars(urgency: int) -> str:
-    return "".join("\u2605" if i < urgency else "\u2606" for i in range(5))
-
-
-def format_difficulty_bars(difficulty: int) -> str:
-    return "".join("\u25C9" if i < difficulty else "\u25CB" for i in range(5))
-
 
 def format_deadline_text(deadline: str) -> str:
-    if deadline in (None, "", "none"):
-        return ""
-    try:
-        dt = datetime.strptime(deadline, "%Y-%m-%d").date()
-    except (ValueError, TypeError):
-        return f"[deadline:{deadline}]"
-    today = date.today()
-    diff = (dt - today).days
+    diff = _deadline_diff(deadline)
+    if diff is None:
+        return f"[deadline:{deadline}]" if deadline not in (None, "", "none") else ""
     if diff < 0:
         return f"[overdue {abs(diff)}d]"
     if diff == 0:

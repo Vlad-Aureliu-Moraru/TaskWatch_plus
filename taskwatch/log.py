@@ -25,6 +25,3 @@ def setup_logger(name: str = "taskwatch", level: int = logging.WARNING) -> loggi
 
     return logger
 
-
-def get_logger(name: str | None = None) -> logging.Logger:
-    return logging.getLogger(f"taskwatch.{name}" if name else "taskwatch")

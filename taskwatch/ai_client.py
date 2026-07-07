@@ -1,4 +1,5 @@
 from __future__ import annotations
+from functools import partial
 
 import json
 import os
@@ -119,11 +120,23 @@ def parse_actions(text: str) -> list[dict]:
 
 # ── Provider implementations ──────────────────────────────────
 
+_OPENAI_PROVIDERS = {
+    "groq": {
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "name": "Groq",
+    },
+    "mistral": {
+        "url": "https://api.mistral.ai/v1/chat/completions",
+        "name": "Mistral",
+    },
+}
 
-def _call_groq(key: str, body: dict, model: str) -> str:
+
+def _call_openai(key: str, body: dict, model: str, provider: str) -> str:
+    cfg = _OPENAI_PROVIDERS[provider]
     body["model"] = model
     req = urllib.request.Request(
-        "https://api.groq.com/openai/v1/chat/completions",
+        cfg["url"],
         data=json.dumps(body).encode(),
         headers={
             "Authorization": f"Bearer {key}",
@@ -136,11 +149,11 @@ def _call_groq(key: str, body: dict, model: str) -> str:
             data = json.loads(resp.read())
             return data["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as e:
-        raise Exception(f"Groq HTTP {e.code}: {e.read().decode()[:200]}")
+        raise Exception(f"{cfg['name']} HTTP {e.code}: {e.read().decode()[:200]}")
     except urllib.error.URLError as e:
-        raise Exception(f"Groq network error: {e.reason}")
+        raise Exception(f"{cfg['name']} network error: {e.reason}")
     except (json.JSONDecodeError, KeyError, IndexError) as e:
-        raise Exception(f"Groq response error: {e}")
+        raise Exception(f"{cfg['name']} response error: {e}")
 
 
 def _call_gemini(key: str, body: dict, model: str) -> str:
@@ -170,33 +183,10 @@ def _call_gemini(key: str, body: dict, model: str) -> str:
         raise Exception(f"Gemini response error: {e}")
 
 
-def _call_mistral(key: str, body: dict, model: str) -> str:
-    body["model"] = model
-    req = urllib.request.Request(
-        "https://api.mistral.ai/v1/chat/completions",
-        data=json.dumps(body).encode(),
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30, context=ssl.create_default_context()) as resp:
-            data = json.loads(resp.read())
-            return data["choices"][0]["message"]["content"]
-    except urllib.error.HTTPError as e:
-        raise Exception(f"Mistral HTTP {e.code}: {e.read().decode()[:200]}")
-    except urllib.error.URLError as e:
-        raise Exception(f"Mistral network error: {e.reason}")
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-        raise Exception(f"Mistral response error: {e}")
-
-
 _HANDLERS: dict[str, callable] = {
-    "groq": _call_groq,
+    "groq": partial(_call_openai, provider="groq"),
     "gemini": _call_gemini,
-    "mistral": _call_mistral,
+    "mistral": partial(_call_openai, provider="mistral"),
 }
 
 
@@ -233,31 +223,91 @@ def chat(messages: list[dict]) -> tuple[str, str, list[dict]]:
     )
 
 
-def build_context(app) -> str:
-    from . import archive_cmds, directory_cmds, task_cmds  # noqa: F811
+def _build_archive_tree() -> list[str]:
+    from . import archive_cmds, directory_cmds, task_cmds
+    from .db import get_conn
 
     parts: list[str] = []
-
-    # ── Archive / directory tree ──
     archives = archive_cmds.list_archives()
+    if not archives:
+        return ["Archives (0):\n"]
+
+    aid_placeholders = ",".join("?" for _ in archives)
+    archive_ids = [a.id for a in archives]
+    conn = get_conn()
+
+    dirs_by_archive: dict[int, list] = {a.id: [] for a in archives}
+    for r in conn.execute(
+        f"SELECT id, archive_id, name FROM directories WHERE archive_id IN ({aid_placeholders}) ORDER BY id",
+        archive_ids,
+    ):
+        dirs_by_archive[r["archive_id"]].append(r)
+
+    all_dir_ids = [r["id"] for rows in dirs_by_archive.values() for r in rows]
+    task_stats: dict[int, tuple[int, int]] = {}
+    if all_dir_ids:
+        did_placeholders = ",".join("?" for _ in all_dir_ids)
+        for r in conn.execute(
+            f"SELECT directory_id, COUNT(*) AS total, COALESCE(SUM(finished), 0) AS done FROM tasks WHERE directory_id IN ({did_placeholders}) GROUP BY directory_id",
+            all_dir_ids,
+        ):
+            task_stats[r["directory_id"]] = (r["total"], r["done"])
+
     parts.append(f"Archives ({len(archives)}):")
     for a in archives:
-        dirs = directory_cmds.list_directories(archive_id=a.id)
-        total_tasks = 0
-        done_tasks = 0
-        for d in dirs:
-            tasks = task_cmds.list_tasks(d.id)
-            total_tasks += len(tasks)
-            done_tasks += sum(1 for t in tasks if t.finished)
+        dirs = dirs_by_archive.get(a.id, [])
+        total_tasks = sum(task_stats.get(d["id"], (0, 0))[0] for d in dirs)
+        done_tasks = sum(task_stats.get(d["id"], (0, 0))[1] for d in dirs)
         parts.append(
             f"  - '{a.name}' [id:{a.id}]: {len(dirs)} dir(s), {total_tasks} task(s) ({done_tasks} done)"
         )
         for d in dirs[:10]:
-            dtasks = task_cmds.list_tasks(d.id)
-            total = len(dtasks)
-            done = sum(1 for t in dtasks if t.finished)
-            parts.append(f"    - '{d.name}' [id:{d.id}]: {total} task(s) ({done} done)")
+            total, done = task_stats.get(d["id"], (0, 0))
+            parts.append(f"    - '{d['name']}' [id:{d['id']}]: {total} task(s) ({done} done)")
     parts.append("")
+    return parts
+
+
+def _build_action_reference(dir_default: str = "current",
+                              archive_default: str = "current",
+                              task_default: str = "selected") -> list[str]:
+    parts: list[str] = []
+    parts.append(
+        "To perform actions, include blocks in this format (multiple OK per response):"
+    )
+    parts.append("")
+    parts.append(">>>ACTION:CREATE_TASK")
+    parts.append("name: Task name")
+    parts.append("description: Description (optional)")
+    parts.append("urgency: 1-5 (optional, default 1)")
+    parts.append("difficulty: 1-5 (optional, default 1)")
+    parts.append("deadline: YYYY-MM-DD (optional)")
+    parts.append("time_dedicated: minutes (optional)")
+    parts.append(f"directory_id: id (optional, defaults to {dir_default})")
+    parts.append("<<<END")
+    parts.append("")
+    parts.append(">>>ACTION:CREATE_DIRECTORY")
+    parts.append("name: Directory name")
+    parts.append(f"archive_id: id (optional, defaults to {archive_default})")
+    parts.append("<<<END")
+    parts.append("")
+    parts.append(">>>ACTION:CREATE_ARCHIVE")
+    parts.append("name: Archive name")
+    parts.append("<<<END")
+    parts.append("")
+    parts.append(">>>ACTION:FINISH_TASK")
+    parts.append(f"task_id: id (optional, defaults to {task_default})")
+    parts.append("<<<END")
+    parts.append("")
+    parts.append(">>>ACTION:ADD_NOTE")
+    parts.append(f"task_id: id (optional, defaults to {task_default})")
+    parts.append("note: Note text")
+    parts.append("<<<END")
+    return parts
+
+
+def build_context(app) -> str:
+    parts: list[str] = _build_archive_tree()
 
     # ── Current location ──
     location: list[str] = []
@@ -295,97 +345,15 @@ def build_context(app) -> str:
             parts.append(f"  ... ({total - 30} more)")
         parts.append("")
 
-    # ── Action reference ──
-    parts.append(
-        "To perform actions, include blocks in this format (multiple OK per response):"
-    )
-    parts.append("")
-    parts.append(">>>ACTION:CREATE_TASK")
-    parts.append("name: Task name")
-    parts.append("description: Description (optional)")
-    parts.append("urgency: 1-5 (optional, default 1)")
-    parts.append("difficulty: 1-5 (optional, default 1)")
-    parts.append("deadline: YYYY-MM-DD (optional)")
-    parts.append("time_dedicated: minutes (optional)")
-    parts.append("directory_id: id (optional, defaults to current)")
-    parts.append("<<<END")
-    parts.append("")
-    parts.append(">>>ACTION:CREATE_DIRECTORY")
-    parts.append("name: Directory name")
-    parts.append("archive_id: id (optional, defaults to current)")
-    parts.append("<<<END")
-    parts.append("")
-    parts.append(">>>ACTION:CREATE_ARCHIVE")
-    parts.append("name: Archive name")
-    parts.append("<<<END")
-    parts.append("")
-    parts.append(">>>ACTION:FINISH_TASK")
-    parts.append("task_id: id (optional, defaults to selected)")
-    parts.append("<<<END")
-    parts.append("")
-    parts.append(">>>ACTION:ADD_NOTE")
-    parts.append("task_id: id (optional, defaults to selected)")
-    parts.append("note: Note text")
-    parts.append("<<<END")
-
+    parts.extend(_build_action_reference())
     return "\n".join(parts)
 
 
 def build_cli_context() -> str:
-    from . import archive_cmds, directory_cmds, task_cmds
-
-    parts: list[str] = []
-
-    archives = archive_cmds.list_archives()
-    parts.append(f"Archives ({len(archives)}):")
-    for a in archives:
-        dirs = directory_cmds.list_directories(archive_id=a.id)
-        total_tasks = 0
-        done_tasks = 0
-        for d in dirs:
-            tasks = task_cmds.list_tasks(d.id)
-            total_tasks += len(tasks)
-            done_tasks += sum(1 for t in tasks if t.finished)
-        parts.append(
-            f"  - '{a.name}' [id:{a.id}]: {len(dirs)} dir(s), {total_tasks} task(s) ({done_tasks} done)"
-        )
-        for d in dirs[:10]:
-            dtasks = task_cmds.list_tasks(d.id)
-            total = len(dtasks)
-            done = sum(1 for t in dtasks if t.finished)
-            parts.append(f"    - '{d.name}' [id:{d.id}]: {total} task(s) ({done} done)")
-    parts.append("")
-
-    parts.append(
-        "To perform actions, include blocks in this format (multiple OK per response):"
+    parts: list[str] = _build_archive_tree()
+    parts.extend(
+        _build_action_reference(dir_default="first directory",
+                                 archive_default="first archive",
+                                 task_default="required")
     )
-    parts.append("")
-    parts.append(">>>ACTION:CREATE_TASK")
-    parts.append("name: Task name")
-    parts.append("description: Description (optional)")
-    parts.append("urgency: 1-5 (optional, default 1)")
-    parts.append("difficulty: 1-5 (optional, default 1)")
-    parts.append("deadline: YYYY-MM-DD (optional)")
-    parts.append("time_dedicated: minutes (optional)")
-    parts.append("directory_id: id (optional, uses first directory if not specified)")
-    parts.append("<<<END")
-    parts.append("")
-    parts.append(">>>ACTION:CREATE_DIRECTORY")
-    parts.append("name: Directory name")
-    parts.append("archive_id: id (optional, uses first archive if not specified)")
-    parts.append("<<<END")
-    parts.append("")
-    parts.append(">>>ACTION:CREATE_ARCHIVE")
-    parts.append("name: Archive name")
-    parts.append("<<<END")
-    parts.append("")
-    parts.append(">>>ACTION:FINISH_TASK")
-    parts.append("task_id: id")
-    parts.append("<<<END")
-    parts.append("")
-    parts.append(">>>ACTION:ADD_NOTE")
-    parts.append("task_id: id")
-    parts.append("note: Note text")
-    parts.append("<<<END")
-
     return "\n".join(parts)
