@@ -13,7 +13,7 @@ def create_subtask(task_id: int, content: str) -> Subtask:
         (task_id, content, max_pos + 1),
     )
     conn.commit()
-    return Subtask(id=cur.lastrowid, task_id=task_id, content=content)
+    return Subtask(id=cur.lastrowid, task_id=task_id, content=content, position=max_pos + 1)
 
 
 def delete_subtask(subtask_id: int) -> bool:

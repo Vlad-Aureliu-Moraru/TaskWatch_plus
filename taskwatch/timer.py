@@ -130,7 +130,7 @@ def fmt_timer_val(v: float) -> str:
 def read_presets() -> dict[str, dict]:
     presets: dict[str, dict] = {}
     try:
-        for line in cfg.read_text().splitlines():
+        for line in CONFIG_PATH.read_text().splitlines():
             if line.startswith("TIMER_PRESET:"):
                 _, rest = line.split(":", 1)
                 if "=" in rest:

@@ -6,7 +6,7 @@ from .models import Task
 from .paths import APTS_FILE, CALCURSE_DIR
 
 TW_TAG = "[TW]"
-TW_RE = re.compile(r"^\d{2}/\d{2}/\d{4}.*\|" + re.escape(TW_TAG))
+TW_RE = re.compile(r"^\d{2}/\d{2}/\d{4}.*\|\s*" + re.escape(TW_TAG))
 
 
 def _date_to_mmddyyyy(d: str) -> str | None:
