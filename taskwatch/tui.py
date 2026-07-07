@@ -77,6 +77,7 @@ from .tui_helpers import (
     _level_color,
     _paste_from_clipboard,
     _play_sound,
+    _render_markdown_to_urwid,
     _solid_bar,
     _vblock_bar,
     logger,
