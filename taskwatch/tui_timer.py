@@ -18,7 +18,7 @@ from urwid import (
 )
 
 from . import task_cmds, timer as timer_mod
-from .paths import DATA_DIR, TIMER_STATE_PATH
+from .paths import CONFIG_PATH, DATA_DIR, TIMER_STATE_PATH
 from .tui_helpers import _build_terminal_cmd, _ensure_default_sounds, _play_sound, _SOUND_DIR
 from .tui_widgets import VimListBox
 
@@ -338,12 +338,11 @@ class _TimerMixin:
         self._set_timed_caption("done", f"Sound '{key}' set to {p.name} ")
 
     def _write_sound_config(self) -> None:
-        cfg_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
         try:
-            with open(cfg_path) as f:
+            with open(CONFIG_PATH) as f:
                 lines = f.readlines()
             written = {"SOUND_ENABLED": False, "SOUND_WORK": False, "SOUND_BREAK": False, "SOUND_DONE": False}
-            with open(cfg_path, "w") as f:
+            with open(CONFIG_PATH, "w") as f:
                 for line in lines:
                     key = line.split(":", 1)[0].strip() if ":" in line else ""
                     if key == "SOUND_ENABLED":

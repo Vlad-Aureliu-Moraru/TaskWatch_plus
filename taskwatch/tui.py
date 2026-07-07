@@ -53,7 +53,7 @@ from . import (
 )
 from . import db as db_mod
 from . import timer as timer_mod
-from .paths import DATA_DIR, TIMER_STATE_PATH
+from .paths import CONFIG_PATH, DATA_DIR, TIMER_STATE_PATH
 from .tui_helpers import (
     CELEBRATION_MESSAGES,
     COMMANDS,
@@ -162,9 +162,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._loading_spinner_idx: int = 0
         self._loading_frames: list[str] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self._loading_title: str = ""
-        cfg_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
         try:
-            with open(cfg_path) as f:
+            with open(CONFIG_PATH) as f:
                 for line in f:
                     if line.startswith("HIGHLIGHT:"):
                         saved = line.split(":", 1)[1].strip()
@@ -461,6 +460,15 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 label = f"\U000f039a {n.id}: {clip}{ts_display}"
                 w = AttrMap(SelectableText(label), "default", "focus")
                 self._list_walker.append(w)
+        self._set_terminal_title()
+
+    def _set_terminal_title(self) -> None:
+        conn = db_mod.get_conn()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE finished = 0"
+        ).fetchone()[0]
+        title = f"TaskWatch+ ({count} pending)" if count else "TaskWatch+"
+        sys.stdout.write(f"\033]0;{title}\007")
 
     def _set_breadcrumb(self, path: str) -> None:
         self._breadcrumb_text.set_text(path)
@@ -2093,9 +2101,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._loop.widget = self._stats_overlay
 
     def _get_terminal(self) -> str | None:
-        config_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
         try:
-            with open(config_path) as f:
+            with open(CONFIG_PATH) as f:
                 for line in f:
                     if line.startswith("TERMINAL:"):
                         term = line.split(":", 1)[1].strip()
@@ -2570,16 +2577,15 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._loop.screen.register_palette(PALETTE)
         self._loop.draw_screen()
         self._highlight_color = name
-        config_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
         try:
             lines: list[str] = []
             found = False
             try:
-                with open(config_path) as f:
+                with open(CONFIG_PATH) as f:
                     lines = f.readlines()
             except OSError:
                 pass
-            with open(config_path, "w") as f:
+            with open(CONFIG_PATH, "w") as f:
                 for line in lines:
                     if line.startswith("HIGHLIGHT:"):
                         f.write(f"HIGHLIGHT:{name}\n")
@@ -2855,9 +2861,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             return
 
     def run(self) -> None:
-        config_path = Path(__file__).resolve().parent.parent / "config" / "config.txt"
         try:
-            with open(config_path) as f:
+            with open(CONFIG_PATH) as f:
                 for line in f:
                     if ":" in line:
                         k, v = line.split(":", 1)

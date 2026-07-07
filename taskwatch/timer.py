@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 
 from .models import Task
+from .paths import CONFIG_PATH
 
 
 _TIME_RE = re.compile(r"^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$")
@@ -128,7 +129,6 @@ def fmt_timer_val(v: float) -> str:
 
 def read_presets() -> dict[str, dict]:
     presets: dict[str, dict] = {}
-    cfg = _config_path()
     try:
         for line in cfg.read_text().splitlines():
             if line.startswith("TIMER_PRESET:"):
@@ -160,7 +160,7 @@ def read_presets() -> dict[str, dict]:
 
 
 def write_presets(presets: dict[str, dict]) -> None:
-    cfg = _config_path()
+    cfg = CONFIG_PATH
     existing_clean: list[str] = []
     try:
         for line in cfg.read_text().splitlines():
@@ -174,10 +174,6 @@ def write_presets(presets: dict[str, dict]) -> None:
         )
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text("\n".join(existing_clean) + "\n")
-
-
-def _config_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "config" / "config.txt"
 
 
 def atomic_write_json(path: Path, data: object) -> None:
