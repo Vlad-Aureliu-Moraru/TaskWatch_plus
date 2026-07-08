@@ -584,13 +584,18 @@ def _do_merge_import_directory(data: dict, conn, archive_id: int) -> str:
 
             for n in data.get("notes", []):
                 if n.get("task_id") == t["id"]:
-                    create_note(
-                        task_id=existing_id,
-                        date=n.get("date", date.today().isoformat()),
-                        note=n.get("note", ""),
-                        file_path=n.get("file_path"),
-                    )
-                    notes_added += 1
+                    dup = conn.execute(
+                        "SELECT id FROM notes WHERE task_id=? AND date=? AND created_at=?",
+                        (existing_id, n.get("date", ""), n.get("created_at", "")),
+                    ).fetchone()
+                    if dup is None:
+                        create_note(
+                            task_id=existing_id,
+                            date=n.get("date", date.today().isoformat()),
+                            note=n.get("note", ""),
+                            file_path=n.get("file_path"),
+                        )
+                        notes_added += 1
 
             for tt in data.get("task_tags", []):
                 if tt.get("task_id") == t["id"]:
@@ -603,10 +608,15 @@ def _do_merge_import_directory(data: dict, conn, archive_id: int) -> str:
 
             for s in data.get("subtasks", []):
                 if s.get("task_id") == t["id"]:
-                    conn.execute(
-                        "INSERT INTO subtasks (task_id, content, finished, position) VALUES (?, ?, ?, ?)",
-                        (existing_id, s["content"], s.get("finished", 0), s.get("position", 0)),
-                    )
+                    dup = conn.execute(
+                        "SELECT id FROM subtasks WHERE task_id=? AND content=?",
+                        (existing_id, s["content"]),
+                    ).fetchone()
+                    if dup is None:
+                        conn.execute(
+                            "INSERT INTO subtasks (task_id, content, finished, position) VALUES (?, ?, ?, ?)",
+                            (existing_id, s["content"], s.get("finished", 0), s.get("position", 0)),
+                        )
 
             merged += 1
         else:
