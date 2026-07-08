@@ -798,6 +798,14 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             self._selected_task_name = None
         self._refresh_list()
 
+    def _handle_wizard_esc(self) -> None:
+        self._prompt_handler = None
+        self._wizard_stack.clear()
+        self._current_prompt = ("standout", "\u276f ")
+        self._cmd.set_caption(("standout", "\u276f "))
+        self._cmd.set_edit_text("")
+        self._focus_body()
+
     def _handle_submit(self, text: str) -> None:
         if self._prompt_handler:
             self._prompt_handler(text)

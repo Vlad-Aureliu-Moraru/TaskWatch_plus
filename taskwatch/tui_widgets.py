@@ -91,7 +91,10 @@ class CommandEdit(Edit):
             if self.get_edit_text():
                 self.set_edit_text("")
                 return None
-            self._app._handle_submit("")
+            if self._app._prompt_handler:
+                self._app._handle_wizard_esc()
+                return None
+            self._app._focus_body()
             return None
         if key == "backspace" and self._app._prompt_handler and not self.get_edit_text():
             self._app._wizard_back()
