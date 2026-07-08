@@ -9,6 +9,26 @@ import urllib.request
 
 from .paths import AI_CONFIG_PATH
 
+_CA_BUNDLE_PATHS = [
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/pki/tls/cacert.pem",
+    "/etc/ssl/cert.pem",
+]
+
+
+def _create_ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    default = ssl.get_default_verify_paths()
+    if default.cafile and not os.path.exists(default.cafile):
+        for path in _CA_BUNDLE_PATHS:
+            if os.path.exists(path):
+                ctx.load_verify_locations(cafile=path)
+                break
+    return ctx
+
+
 _DEFAULT_FALLBACK_ORDER = ["groq", "gemini", "mistral"]
 
 MODELS: dict[str, str] = {
@@ -145,7 +165,7 @@ def _call_openai(key: str, body: dict, model: str, provider: str) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30, context=ssl.create_default_context()) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=_create_ssl_context()) as resp:
             data = json.loads(resp.read())
             return data["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as e:
@@ -172,7 +192,7 @@ def _call_gemini(key: str, body: dict, model: str) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30, context=ssl.create_default_context()) as resp:
+        with urllib.request.urlopen(req, timeout=30, context=_create_ssl_context()) as resp:
             data = json.loads(resp.read())
             return data["candidates"][0]["content"]["parts"][0]["text"]
     except urllib.error.HTTPError as e:

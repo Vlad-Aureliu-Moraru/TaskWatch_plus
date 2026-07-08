@@ -1343,8 +1343,11 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
 
     def _cmd_filter_tag_clear(self) -> None:
         self._filter_tag = None
-        if self._level == Level.TASKS:
-            self._refresh_list()
+        self._filter_text = ""
+        if self._search_debounce_alarm is not None:
+            self._loop.remove_alarm(self._search_debounce_alarm)
+            self._search_debounce_alarm = None
+        self._refresh_list()
 
     def _cmd_start_timer(self) -> None:
         if self._selected_task_id is not None:
