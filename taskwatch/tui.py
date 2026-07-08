@@ -286,7 +286,10 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         on_done(result)
 
     def _refresh_list(self) -> None:
-        old_focus = self._list_box.focus_position
+        try:
+            old_focus = self._list_box.focus_position
+        except IndexError:
+            old_focus = 0
         old_level = self._level
         self._list_walker.clear()
 
