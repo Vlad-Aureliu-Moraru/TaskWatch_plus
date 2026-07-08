@@ -286,6 +286,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         on_done(result)
 
     def _refresh_list(self) -> None:
+        old_focus = self._list_box.focus_position
+        old_level = self._level
         self._list_walker.clear()
 
         filter_indicator = ""
@@ -465,6 +467,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 label = f"\U000f039a {n.id}: {clip}{ts_display}"
                 w = AttrMap(SelectableText(label), "default", "focus")
                 self._list_walker.append(w)
+        if self._level == old_level and self._current_items:
+            self._list_box.focus_position = min(old_focus, len(self._current_items) - 1)
         self._set_terminal_title()
 
     def _set_terminal_title(self) -> None:
@@ -2118,7 +2122,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         term = _detect_terminal()
         if term:
             try:
-                with open(config_path, "a") as f:
+                with open(CONFIG_PATH, "a") as f:
                     f.write(f"\nTERMINAL:{term}\n")
             except OSError:
                 pass

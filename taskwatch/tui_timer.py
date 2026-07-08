@@ -284,7 +284,7 @@ class _TimerMixin:
         if terminal is None:
             self._set_timed_caption("error", "No terminal found ")
             return
-        cmd = _build_terminal_cmd(terminal, f"'{script}' ; echo; echo 'Press Enter to close...'; read")
+        cmd = _build_terminal_cmd(terminal, f"'{script}'")
         try:
             subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError:

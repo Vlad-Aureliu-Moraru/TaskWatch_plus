@@ -475,13 +475,24 @@ def _detect_terminal() -> str | None:
 
 
 def _build_terminal_cmd(terminal: str, cmd_str: str) -> list[str]:
-    if terminal == "kitty":
-        return ["kitty", "sh", "-c", cmd_str]
-    if terminal == "wezterm":
-        return ["wezterm", "start", "--", "sh", "-c", cmd_str]
-    if terminal == "gnome-terminal":
+    hold_arg = _TERMINAL_HOLD.get(terminal)
+    if hold_arg is None:
+        return [terminal, "-e", "sh", "-c", cmd_str]
+    if hold_arg == "":
         return [terminal, "--", "sh", "-c", cmd_str]
-    return [terminal, "-e", "sh", "-c", cmd_str]
+    return [terminal, hold_arg, "sh", "-c", cmd_str]
+
+
+_TERMINAL_HOLD: dict[str, str] = {
+    "kitty":             "--hold",
+    "alacritty":         "--hold",
+    "wezterm":           "--hold",
+    "konsole":           "--hold",
+    "xfce4-terminal":    "--hold",
+    "foot":              "--hold",
+    "gnome-terminal":    "",
+    "xterm":             "-hold",
+}
 
 
 def _find_opencode() -> str | None:
