@@ -372,12 +372,12 @@ class _WizardMixin:
             self._start_wizard("Description: ", self._wiz_edit_task_description)
         elif step == 2:
             self._start_wizard(
-                f"Urgency 1-5 [default {self._edit_task_defaults.get('urgency', 1)}]: ",
+                f"Urgency 1-5 [default {self._edit_ctx.get('urgency', 1)}]: ",
                 self._wiz_edit_task_urgency,
             )
         elif step == 3:
             self._start_wizard(
-                f"Difficulty 1-5 [default {self._edit_task_defaults.get('difficulty', 1)}]: ",
+                f"Difficulty 1-5 [default {self._edit_ctx.get('difficulty', 1)}]: ",
                 self._wiz_edit_task_difficulty,
             )
         elif step == 4:
@@ -449,11 +449,13 @@ class _WizardMixin:
         self._edit_task(step=1, value=name)
 
     def _wiz_edit_task_description(self, desc: str) -> None:
+        if not desc:
+            desc = self._edit_ctx.get("description", "")
         self._edit_task(step=2, value=desc)
 
     def _wiz_edit_task_urgency(self, urgency_str: str) -> None:
         if not urgency_str:
-            urgency = self._edit_task_defaults.get("urgency", 1)
+            urgency = self._edit_ctx.get("urgency", 1)
         else:
             try:
                 urgency = int(urgency_str)
@@ -461,7 +463,7 @@ class _WizardMixin:
                     raise ValueError
             except ValueError:
                 self._start_wizard(
-                    f"Urgency 1-5 [default {self._edit_task_defaults.get('urgency', 1)}]: ",
+                    f"Urgency 1-5 [default {self._edit_ctx.get('urgency', 1)}]: ",
                     self._wiz_edit_task_urgency,
                 )
                 return
@@ -469,7 +471,7 @@ class _WizardMixin:
 
     def _wiz_edit_task_difficulty(self, diff_str: str) -> None:
         if not diff_str:
-            difficulty = self._edit_task_defaults.get("difficulty", 1)
+            difficulty = self._edit_ctx.get("difficulty", 1)
         else:
             try:
                 difficulty = int(diff_str)
@@ -477,7 +479,7 @@ class _WizardMixin:
                     raise ValueError
             except ValueError:
                 self._start_wizard(
-                    f"Difficulty 1-5 [default {self._edit_task_defaults.get('difficulty', 1)}]: ",
+                    f"Difficulty 1-5 [default {self._edit_ctx.get('difficulty', 1)}]: ",
                     self._wiz_edit_task_difficulty,
                 )
                 return
@@ -485,7 +487,7 @@ class _WizardMixin:
 
     def _wiz_edit_task_time(self, time_str: str) -> None:
         if not time_str:
-            time_dedicated = 0
+            time_dedicated = self._edit_ctx.get("time_dedicated", 0)
         else:
             try:
                 time_dedicated = int(time_str)
@@ -496,7 +498,7 @@ class _WizardMixin:
 
     def _wiz_edit_task_deadline(self, deadline: str) -> None:
         if not deadline:
-            deadline = "none"
+            deadline = self._edit_ctx.get("deadline", "none")
         if deadline != "none":
             try:
                 task_cmds._normalize_date(deadline)
@@ -506,12 +508,15 @@ class _WizardMixin:
         self._edit_task(step=6, value=deadline)
 
     def _wiz_edit_repeatable(self, yn: str) -> None:
-        repeatable = yn.lower() in ("y", "yes")
+        if not yn:
+            repeatable = self._edit_ctx.get("repeatable", False)
+        else:
+            repeatable = yn.lower() in ("y", "yes")
         self._edit_task(step=7, value=repeatable)
 
     def _wiz_edit_repeat_type(self, repeat_type: str) -> None:
         if not repeat_type:
-            repeat_type = "daily"
+            repeat_type = self._edit_ctx.get("repeatable_type", "daily")
         valid = ("daily", "weekly", "biweekly", "monthly", "yearly")
         if repeat_type not in valid:
             self._start_wizard("Repeat type daily/weekly/biweekly/monthly/yearly: ", self._wiz_edit_repeat_type)
@@ -525,7 +530,10 @@ class _WizardMixin:
         self._edit_task(step=9, value="none")
 
     def _wiz_edit_auto_repeat(self, auto_repeat_yn: str) -> None:
-        to_complete = auto_repeat_yn.lower() in ("y", "yes")
+        if not auto_repeat_yn:
+            to_complete = self._edit_ctx.get("has_to_be_completed_to_repeat", True)
+        else:
+            to_complete = auto_repeat_yn.lower() in ("y", "yes")
         self._edit_task(step=10, value=to_complete)
 
     def _start_wizard(

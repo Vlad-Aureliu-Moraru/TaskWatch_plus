@@ -122,7 +122,6 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._cmd_history: list[str] = []
         self._cmd_history_index: int = -1
         self._edit_ctx: dict | None = None
-        self._edit_task_defaults: dict = {}
         self._help_overlay = None
         self._global_search_overlay = None
         self._prev_overlay = None
@@ -1473,10 +1472,6 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                     "repeatable_type": task.repeatable_type,
                     "has_to_be_completed_to_repeat": task.has_to_be_completed_to_repeat,
                     "repeat_on_specific_day": task.repeat_on_specific_day,
-                }
-                self._edit_task_defaults = {
-                    "urgency": task.urgency,
-                    "difficulty": task.difficulty,
                 }
                 self._start_wizard(
                     f"Task name [{task.name}]: ",
