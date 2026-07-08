@@ -572,3 +572,4 @@ class _WizardMixin:
             calcurse_cmds.sync_to_calcurse()
         except Exception:
             pass
+        self._focus_body()

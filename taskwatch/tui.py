@@ -917,6 +917,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             if cmd.startswith(prefix):
                 getattr(self, method_name)(cmd)
                 return
+        self._set_timed_caption("error", f"Unknown command: {cmd} ")
         self._focus_body()
 
     def _cmd_quit(self) -> None:
@@ -1118,8 +1119,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
     def _cmd_cancel(self) -> None:
         self._prompt_handler = None
         self._wizard_stack.clear()
-        self._current_prompt = ": "
-        self._cmd.set_caption(": ")
+        self._current_prompt = ("standout", "\u276f ")
+        self._cmd.set_caption(("standout", "\u276f "))
         self._bulk_selection.clear()
         self._refresh_list()
         self._focus_body()
