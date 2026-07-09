@@ -1261,7 +1261,25 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
     def _resolve_import_path(self, cmd: str) -> str | None:
         parts = cmd.split(" ", 1)
         if len(parts) > 1 and parts[1].strip():
-            return parts[1].strip()
+            arg = parts[1].strip()
+            if arg.startswith("--name "):
+                dir_name = arg[7:].strip()
+                dir_id = task_cmds.resolve_directory(dir_name)
+                if dir_id is None:
+                    return None
+                d = directory_cmds.get_directory(dir_id)
+                if d and d.project_path:
+                    jl = list(Path(d.project_path).glob("*.json"))
+                    if not jl:
+                        return None
+                    if len(jl) == 1:
+                        return str(jl[0])
+                    for jf in jl:
+                        if jf.name == "taskwatch_export_current.json":
+                            return str(jf)
+                    return None
+                return None
+            return arg
         pp = self._get_project_path_for_selection()
         if pp:
             return str(Path(pp) / "taskwatch_export_current.json")
@@ -1270,7 +1288,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
     def _cmd_import_exported(self, cmd: str) -> None:
         path = self._resolve_import_path(cmd)
         if not path:
-            self._set_timed_caption("error", "Usage: :importExported <path>  (or attach a project first) ")
+            self._set_timed_caption("error", "Usage: :importExported <path> | --name <dir>  (or attach a project first) ")
             return
         result = io_cmds.import_exported_item(
             path,
@@ -1286,7 +1304,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
     def _cmd_import_exported_merge(self, cmd: str) -> None:
         path = self._resolve_import_path(cmd)
         if not path:
-            self._set_timed_caption("error", "Usage: :importExportedMerge <path>  (no attach a project directory) ")
+            self._set_timed_caption("error", "Usage: :importExportedMerge <path> | --name <dir>  (no attach a project directory) ")
             return
         result = io_cmds.import_exported_item(
             path,
