@@ -74,7 +74,10 @@ from .tui_helpers import (
     _gradient_attr,
     _hblock_bar,
     _heatmap_attr,
+    _apply_pattern,
     _level_color,
+    LEVEL_XP_THRESHOLDS,
+    _level_theme,
     _progress_gradient_attr,
     _paste_from_clipboard,
     _play_sound,
@@ -347,13 +350,20 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                     [d.id for d in items],
                 ):
                     dir_stats[row["directory_id"]] = (row["total"], row["done"])
-            pairs: list[tuple[str, str, str]] = []
+            pairs: list[tuple[str | list, str, str]] = []
             for d in items:
                 total, done = dir_stats.get(d.id, (0, 0))
                 completed = total > 0 and done == total
-                icon = "󱥾" if completed else "\uf4d3"
-                attr = "done_dir" if completed else "default"
-                pairs.append((f"{icon} {d.name}", f"[{done}/{total}]", attr))
+                if completed:
+                    left = f"\U000f197e {d.name}"
+                    attr = "done_dir"
+                else:
+                    icon, pattern = _level_theme(d.level)
+                    segments = _apply_pattern(d.name, pattern)
+                    first_color = pattern[0][0]
+                    left = [(first_color, f"{icon} ")] + segments
+                    attr = first_color
+                pairs.append((left, f"[{done}/{total}]", attr))
             if pairs:
                 rw = max(len(r) for _, r, _ in pairs) + 1
                 for left, right, attr in pairs:
@@ -538,12 +548,25 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             d = self._current_items[idx]
             proj = d.project_path if d.project_path else "No attached project"
             _total, _done = stats_cmds.directory_stats(d.id)
+            theme_icon, pattern = _level_theme(d.level)
+            badge_color = pattern[0][0]
             lines: list[str | list] = [
-                [("head", f"\uf4d3 {d.name}"), ("dim", f" (id: {d.id})")],
+                [("head", f"{theme_icon} {d.name}"), ("dim", f" (id: {d.id})"), (badge_color, f"  \u2605 Lv.{d.level}")],
             ]
             _pct = round(_done / _total * 100) if _total > 0 and _done > 0 else 100
             _fa = "dim" if _done == 0 else _progress_gradient_attr(_pct)
             lines.append([("", "  "), *_hblock_bar(_pct, 14, fill_attr=_fa)])
+            max_level = len(LEVEL_XP_THRESHOLDS)
+            if d.level < max_level:
+                current_tier = LEVEL_XP_THRESHOLDS[d.level - 1]
+                next_tier = LEVEL_XP_THRESHOLDS[d.level]
+                xp_in_tier = d.xp - current_tier
+                tier_size = next_tier - current_tier
+                xp_pct = round(xp_in_tier / tier_size * 100) if tier_size > 0 else 0
+                xp_bar = _hblock_bar(xp_pct, 10, fill_attr=badge_color)
+                lines.append([("", "  "), ("dim", "XP "), *xp_bar, ("dim", f"  {d.xp}/{next_tier}")])
+            else:
+                lines.append([("dim", f"  XP {d.xp}  \u2605 MAX")])
             lines.append([("c2", f"  Project: {proj}")])
             lines.append(["\nPress Enter to browse tasks."])
             archive_id = self._selected_archive_id
@@ -678,6 +701,12 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             self._detail_walker.append(Text([
                 ("head", "Time spent: "), spent_str,
             ]))
+        xp_value = task.difficulty * (task.time_dedicated + 5)
+        xp_color = "done" if task.finished else "c3"
+        xp_label = "XP earned:" if task.finished else "XP value:"
+        self._detail_walker.append(Text([
+            ("head", f"  {xp_label} "), (xp_color, f"{xp_value}"),
+        ]))
         self._detail_walker.append(Text(""))
 
         # Tags
@@ -883,6 +912,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         "ftc": "_cmd_filter_tag_clear",
         "focus": "_cmd_toggle_focus",
         "dedupn": "_cmd_note_dedup",
+        "recalculateLevel": "_cmd_recalculate_level",
     }
 
     _CMD_PREFIX_DISPATCH: list[tuple[str, str]] = [
@@ -1619,6 +1649,13 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             self._set_timed_caption("done", f"Deleted {count} duplicate note(s) ")
         else:
             self._set_timed_caption("info", "No duplicate notes found ")
+
+    def _cmd_recalculate_level(self) -> None:
+        count = directory_cmds.recalculate_all_levels()
+        if self._level == Level.DIRECTORIES:
+            self._refresh_list()
+            self._show_detail()
+        self._set_timed_caption("done", f"Recalculated levels for {count} director(ies) ")
 
     def _save_edit_task(self) -> None:
         ctx = self._edit_ctx

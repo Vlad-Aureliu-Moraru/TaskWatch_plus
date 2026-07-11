@@ -13,6 +13,8 @@ class Directory:
     archive_id: int
     name: str
     project_path: str = ""
+    xp: int = 0
+    level: int = 1
 
 
 @dataclass

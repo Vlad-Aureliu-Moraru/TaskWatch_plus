@@ -7,11 +7,13 @@ from .db import get_conn
 from .models import Directory
 
 
-_DIR_COLS = "id, archive_id, name, project_path"
+_DIR_COLS = "id, archive_id, name, project_path, xp, level"
 
 
 def _row_to_dir(r) -> Directory:
-    return Directory(id=r["id"], archive_id=r["archive_id"], name=r["name"], project_path=r["project_path"] or "")
+    return Directory(id=r["id"], archive_id=r["archive_id"], name=r["name"],
+                     project_path=r["project_path"] or "",
+                     xp=r["xp"] or 0, level=r["level"] or 1)
 
 
 def list_directories(archive_id: int | None = None) -> list[Directory]:
@@ -36,7 +38,7 @@ def create_directory(archive_id: int, name: str) -> Directory | None:
             (archive_id, name),
         )
         conn.commit()
-        return Directory(id=cur.lastrowid, archive_id=archive_id, name=name)
+        return Directory(id=cur.lastrowid, archive_id=archive_id, name=name, xp=0, level=1)
     except sqlite3.IntegrityError:
         return None
 
@@ -133,6 +135,41 @@ def attach_project(directory_path: str, directory_id: int, directory_name: str) 
     except (OSError, ValueError) as e:
         print(f"Error writing {target}: {e}", file=sys.stderr)
         return False
+
+
+def _calculate_directory_xp(dir_id: int) -> int:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT COALESCE(SUM(difficulty * (time_dedicated + 5)), 0) AS total_xp "
+        "FROM tasks WHERE directory_id = ? AND finished = 1",
+        (dir_id,),
+    ).fetchone()
+    return row["total_xp"] if row else 0
+
+
+def recalculate_directory_level(dir_id: int) -> Directory | None:
+    from .tui_helpers import _get_level_for_xp
+    xp = _calculate_directory_xp(dir_id)
+    level = _get_level_for_xp(xp)
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE directories SET xp = ?, level = ? WHERE id = ?",
+        (xp, level, dir_id),
+    )
+    conn.commit()
+    if cur.rowcount == 0:
+        return None
+    return get_directory(dir_id)
+
+
+def recalculate_all_levels() -> int:
+    conn = get_conn()
+    dirs = conn.execute("SELECT id FROM directories").fetchall()
+    count = 0
+    for d in dirs:
+        if recalculate_directory_level(d["id"]):
+            count += 1
+    return count
 
 
 def move_directory(dir_id: int, new_archive_id: int) -> Directory | None:

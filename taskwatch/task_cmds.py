@@ -3,6 +3,7 @@ import re
 import sqlite3
 from datetime import date, datetime, timedelta
 
+from . import directory_cmds
 from .db import get_conn
 from .models import Task
 
@@ -277,7 +278,11 @@ def edit_task(task_id: int, **kwargs) -> Task | None:
     if cur.rowcount == 0:
         return None
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    return _row_to_task(row) if row else None
+    if row:
+        if "finished" in updates:
+            directory_cmds.recalculate_directory_level(row["directory_id"])
+        return _row_to_task(row)
+    return None
 
 
 _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
@@ -386,6 +391,8 @@ def set_task_finished(task_id: int, finished: bool) -> Task | None:
     if finished and task and task.repeatable and task.repeatable_type != "none":
         reset = task.deadline == "none"
         task = advance_deadline(task, reset_finished=reset)
+    if task:
+        directory_cmds.recalculate_directory_level(task.directory_id)
     return task if task else None
 
 

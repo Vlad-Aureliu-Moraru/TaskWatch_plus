@@ -122,6 +122,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE directories ADD COLUMN project_path TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE directories ADD COLUMN xp INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE directories ADD COLUMN level INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
     _migrate_notes(conn)
     _migrate_dates(conn)
     conn.executescript(IDX_SQL)

@@ -49,6 +49,12 @@ def _make_list_row(
         "c4": "c4_focus",
         "c5": "c5_focus",
         "c6": "c6_focus",
+        "white_fg": "white_fg_focus",
+        "light_magenta": "light_magenta_focus",
+        "light_cyan": "light_cyan_focus",
+        "bright_yellow": "bright_yellow_focus",
+        "black": "black_focus",
+        "head": "head_focus",
     }
     return AttrMap(Columns(cols), attr_map, focus_map)
 

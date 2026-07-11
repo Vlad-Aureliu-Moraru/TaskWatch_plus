@@ -69,6 +69,7 @@ PALETTE = [
     ("default", "default", "default"),
     ("focus", "default", "dark blue", "standout"),
     ("head", "default", "default", "bold"),
+    ("head_focus", "default", "dark blue", "bold"),
     ("dim", "dark gray", "default"),
     ("done", "dark green", "default"),
     ("warn", "brown", "default"),
@@ -92,6 +93,16 @@ PALETTE = [
     ("c4_focus", "light red", "dark blue", "standout"),
     ("c5_focus", "dark red", "dark blue", "standout"),
     ("c6_focus", "light blue", "dark blue", "standout"),
+    ("white_fg", "white", "default"),
+    ("white_fg_focus", "white", "dark blue", "standout"),
+    ("light_magenta", "light magenta", "default"),
+    ("light_magenta_focus", "light magenta", "dark blue", "standout"),
+    ("light_cyan", "light cyan", "default"),
+    ("light_cyan_focus", "light cyan", "dark blue", "standout"),
+    ("bright_yellow", "yellow, bold", "default"),
+    ("bright_yellow_focus", "yellow, bold", "dark blue", "standout"),
+    ("black", "black", "default"),
+    ("black_focus", "black", "dark blue", "standout"),
     ("done_dir", "dark blue", "default"),
     ("search_highlight", "black, bold", "yellow"),
 ]
@@ -140,7 +151,7 @@ COMMANDS = [
     "subadd ", "subrm ", "subdone ", "subedit ",
     "snooze ", "dup", "standup", "select ", "focus", "attachProject ",
     "preset ", "preset list", "preset add", "preset remove",
-    "update",
+    "update", "recalculateLevel",
 ]
 
 CELEBRATION_MESSAGES = [
@@ -203,6 +214,7 @@ HELP_ENTRIES: list[tuple[str, str, str]] = [
     ("Stats & View", ":aii disconnect <p>", "Remove an AI provider"),
     ("Stats & View", ":aii providers", "List configured providers"),
     ("Stats & View", ":highlight", "Choose highlight beam color"),
+    ("Stats & View", ":recalculateLevel", "Recalculate XP and level for all directories"),
     ("Undo", ":undo", "Undo last delete / edit / finish"),
     ("Export/Import", ":export [path]", "Export all data as JSON"),
     ("Export/Import", ":import <path>", "Import all data from JSON"),
@@ -369,8 +381,115 @@ def _bar(val: int, outof: int) -> list:
     return result
 
 
+LEVEL_XP_THRESHOLDS = [0, 50, 150, 350, 700, 1200, 2000, 3500, 5500, 8000]
+
+LEVEL_PATTERNS = [
+    ("\u00b7", [("dim", 0)]),  # 1  ·
+    ("\u2219", [("c1", 2), ("c2", "rem"), ("c1", 2)]),  # 2  ∙
+    ("\u2022", [("c6", 2), ("c2", "rem"), ("c6", 2)]),  # 3  •
+    ("\u25cb", [("c6", 0), ("white_fg", 0), ("c2", 0)]),  # 4  ○
+    ("\u25ce", [("c3", 2), ("bright_yellow", 2)]),      # 5  ◎
+    ("\u25c9", [("c4", 2), ("light_magenta", 2)]),      # 6  ◉
+    ("\u25cf", [("c5", 3), ("c4", "rem"), ("white_fg", 3)]),  # 7  ●
+    ("\u25c7", [("c6", 3), ("light_magenta", "rem"), ("light_cyan", 3)]),  # 8  ◇
+    ("\u25c6", [("c5", 0), ("c3", 0), ("c2", 0), ("c6", 0)]),  # 9  ◆
+    ("\u25c8", [("white_fg", 1), ("c3", "rem"), ("white_fg", 1)]),  # 10 ◈
+]
+
+
+def _apply_pattern(name: str, segments: list) -> list[tuple[str, str]]:
+    n = len(name)
+    if n == 0:
+        return []
+
+    alt_colors = [c for c, s in segments if s == "alt"]
+    if alt_colors:
+        return [(alt_colors[i % len(alt_colors)], ch) for i, ch in enumerate(name)]
+
+    fixed_before = 0
+    fixed_after = 0
+    eq_count = 0
+    has_rem = False
+    has_eq = False
+    for _, spec in segments:
+        if isinstance(spec, int) and spec > 0:
+            if has_rem:
+                fixed_after += spec
+            else:
+                fixed_before += spec
+        elif spec == "rem":
+            has_rem = True
+        elif isinstance(spec, int) and spec == 0:
+            has_eq = True
+            eq_count += 1
+
+    # Repeating pattern (fixed segments only, no rem/eq/alt)
+    if not has_rem and not has_eq:
+        cycle: list[tuple[str, int]] = [(c, s) for c, s in segments if isinstance(s, int) and s > 0]
+        if cycle:
+            result: list[tuple[str, str]] = []
+            idx = 0
+            while idx < n:
+                for color, spec in cycle:
+                    take = min(spec, n - idx)
+                    if take > 0:
+                        result.append((color, name[idx:idx + take]))
+                        idx += take
+                    if idx >= n:
+                        break
+            return result
+
+    total_fixed = fixed_before + fixed_after
+    if total_fixed > n:
+        return [(segments[0][0], name)]
+
+    rem = max(0, n - fixed_before - fixed_after)
+    eq_size = rem // eq_count if eq_count > 0 else 0
+
+    result = []
+    idx = 0
+    eq_idx = 0
+    for color, spec in segments:
+        if isinstance(spec, int) and spec > 0:
+            if has_rem and n - idx <= fixed_after:
+                take = min(spec, fixed_after)
+            else:
+                take = min(spec, fixed_before)
+            if take > 0:
+                result.append((color, name[idx:idx + take]))
+                idx += take
+            if has_rem:
+                fixed_after -= take
+            else:
+                fixed_before -= take
+        elif spec == "rem":
+            if rem > 0:
+                result.append((color, name[idx:idx + rem]))
+                idx += rem
+        elif isinstance(spec, int) and spec == 0:
+            take = eq_size if eq_idx < eq_count - 1 else n - idx
+            if take > 0:
+                result.append((color, name[idx:idx + take]))
+                idx += take
+            eq_idx += 1
+
+    return result
+
+
+def _level_theme(level: int) -> tuple[str, list]:
+    idx = max(0, min(len(LEVEL_PATTERNS) - 1, level - 1))
+    return LEVEL_PATTERNS[idx]
+
+
 def _level_color(level: int) -> str:
     return f"c{max(1, min(5, level))}"
+
+
+def _get_level_for_xp(xp: int) -> int:
+    for i in range(len(LEVEL_XP_THRESHOLDS) - 1, -1, -1):
+        if xp >= LEVEL_XP_THRESHOLDS[i]:
+            return i + 1
+    return 1
 
 
 _BRAILLE_STEPS = "\u2800\u2840\u28c0\u28c4\u28e4\u28e6\u28f6\u28f7\u28ff"
