@@ -73,14 +73,13 @@ from .tui_helpers import (
     _generate_wav,
     _gradient_attr,
     _hblock_bar,
+    _heatmap_attr,
     _level_color,
     _progress_gradient_attr,
     _paste_from_clipboard,
     _play_sound,
     _BRAILLE_STEPS,
     _render_markdown_to_urwid,
-    _solid_bar,
-    _vblock_bar,
     logger,
 )
 from .tui_timer import _TimerMixin
@@ -542,10 +541,9 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             lines: list[str | list] = [
                 [("head", f"\uf4d3 {d.name}"), ("dim", f" (id: {d.id})")],
             ]
-            if _total > 0:
-                _pct = round(_done / _total * 100)
-                _fa = _progress_gradient_attr(_pct)
-                lines.append([("", "  "), *_hblock_bar(_pct, 14, fill_attr=_fa)])
+            _pct = round(_done / _total * 100) if _total > 0 and _done > 0 else 100
+            _fa = "dim" if _done == 0 else _progress_gradient_attr(_pct)
+            lines.append([("", "  "), *_hblock_bar(_pct, 14, fill_attr=_fa)])
             lines.append([("c2", f"  Project: {proj}")])
             lines.append(["\nPress Enter to browse tasks."])
             archive_id = self._selected_archive_id
@@ -1890,7 +1888,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
 
         # ── Completion (smooth horizontal-block bar, gradient colour) ──
         add([("head", "  \u25b8 Completion  "),
-             *_hblock_bar(s["completion_pct"], bar_width),
+             *_hblock_bar(s["completion_pct"], bar_width, fill_attr=_progress_gradient_attr(s["completion_pct"])),
              f"  {s['completion_pct']:>3}%"])
 
         # ── Status (inline, semantic colours) ──
@@ -1960,7 +1958,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 ah, _ = divmod(a["time_budget"], 60)
                 add([
                     f"    {name:<14} ",
-                    *_vblock_bar(a["pct"], bar_width),
+                    *_hblock_bar(100 if a["done"] == 0 else a["pct"], bar_width, fill_attr="dim" if a["done"] == 0 else None),
                     f"  {a['pct']:>3}%  {a['done']}/{a['total']}",
                     ("dim", f"  {ah}h"),
                 ])
@@ -1973,7 +1971,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 name = d["name"][:18]
                 add([
                     f"    {name:<18} ",
-                    *_solid_bar(d["pct"], bar_width),
+                    *_hblock_bar(100 if d["done"] == 0 else d["pct"], bar_width, fill_attr="dim" if d["done"] == 0 else None),
                     f"  {d['pct']:>3}%  {d['done']}/{d['total']}",
                 ])
             if len(dirs) > 10:
@@ -1988,22 +1986,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             cells: list = [f"    {day_labels[day_idx]}  "]
             for col in range(12):
                 c = heatmap[day_idx][col]
-                if c == 0:
-                    cells.append(("dim", f"{_BRAILLE_STEPS[0]}  "))
-                else:
-                    intensity = c / max_count
-                    if intensity >= 0.8:
-                        attr = "c5"
-                    elif intensity >= 0.6:
-                        attr = "c4"
-                    elif intensity >= 0.4:
-                        attr = "c3"
-                    elif intensity >= 0.2:
-                        attr = "c2"
-                    else:
-                        attr = "c1"
-                    bstep = _BRAILLE_STEPS[int(round(intensity * 8))]
-                    cells.append((attr, f"{bstep}  "))
+                cells.append((_heatmap_attr(c, max_count), "\u25a0 "))
             add(cells)
 
         stats_w = LineBox(VimListBox(SimpleFocusListWalker(walker)))

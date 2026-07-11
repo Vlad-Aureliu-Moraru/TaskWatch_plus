@@ -83,6 +83,9 @@ PALETTE = [
     ("c4", "light red", "default"),
     ("c5", "dark red", "default"),
     ("c6", "light blue", "default"),
+    ("hm1", "light green", "default"),
+    ("hm2", "dark green", "default"),
+    ("hm3", "dark green, bold", "default"),
     ("c1_focus", "dark green", "dark blue", "standout"),
     ("c2_focus", "light green", "dark blue", "standout"),
     ("c3_focus", "yellow", "dark blue", "standout"),
@@ -370,9 +373,7 @@ def _level_color(level: int) -> str:
     return f"c{max(1, min(5, level))}"
 
 
-_HBLOCK_STEPS = " \u258f\u258e\u258d\u258c\u258b\u258a\u2589\u2588"
 _BRAILLE_STEPS = "\u2800\u2840\u28c0\u28c4\u28e4\u28e6\u28f6\u28f7\u28ff"
-_VBLOCK_STEPS = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587"
 
 
 def _gradient_attr(pct: int) -> str:
@@ -423,25 +424,15 @@ def _braille_bar(pct: int, width: int, fill_attr: str) -> list:
     return parts
 
 
-def _vblock_bar(pct: int, width: int, empty_char: str = "\u2581") -> list:
-    fa = _gradient_attr(pct)
-    total = width * 8
-    filled = int(total * pct / 100)
-    full = filled // 8
-    rem = filled % 8
-    empty = width - full - (1 if rem else 0)
-    parts: list = [(fa, "\u2588" * full)]
-    if rem:
-        parts.append((fa, _VBLOCK_STEPS[rem]))
-    if empty > 0:
-        parts.append(("bar_e", empty_char * empty))
-    return parts
-
-
-def _solid_bar(pct: int, width: int) -> list:
-    fa = _gradient_attr(pct)
-    filled = int(width * pct / 100)
-    return [(fa, "\u2588" * filled + "\u2591" * (width - filled))]
+def _heatmap_attr(count: int, max_count: int) -> str:
+    if count == 0:
+        return "dim"
+    pct = int(count / max_count * 100) if max_count else 0
+    if pct >= 67:
+        return "hm3"
+    if pct >= 33:
+        return "hm2"
+    return "hm1"
 
 
 def _dur(secs: int) -> str:
