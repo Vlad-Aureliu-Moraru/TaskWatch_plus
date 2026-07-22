@@ -1,6 +1,7 @@
 # ruff: noqa: E501
 import asyncio
 import json
+import os
 import secrets
 import subprocess
 import tempfile
@@ -50,16 +51,18 @@ class TerminalSession:
     def __init__(self, name: str):
         self.name = name
         self._running = True
-        self._last_content = ""
+        self.output_file = f"/tmp/{name}.out"
+        self._read_pos = 0
 
     def start(self, cmd: str, open_terminal: bool = False):
+        open(self.output_file, "w").close()
         subprocess.run(
-            ["tmux", "new-session", "-d", "-s", self.name],
+            ["tmux", "new-session", "-d", "-s", self.name, "sh", "-c", cmd],
             capture_output=True, timeout=5,
         )
-        subprocess.run(
-            ["tmux", "send-keys", "-t", self.name, cmd, "Enter"],
-            capture_output=True, timeout=5,
+        subprocess.Popen(
+            ["tmux", "pipe-pane", "-t", self.name, f"cat >> {self.output_file}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         if open_terminal:
             terminal = _detect_terminal()
@@ -79,24 +82,23 @@ class TerminalSession:
         )
 
     async def read_output(self, websocket: WebSocket):
-        loop = asyncio.get_event_loop()
+        sent_initial = False
         try:
             while self._running:
-                r = await loop.run_in_executor(
-                    None,
-                    lambda: subprocess.run(
-                        ["tmux", "capture-pane", "-e", "-p", "-S", "-1000", "-t", self.name],
-                        capture_output=True, timeout=3,
-                    ),
-                )
-                if r.returncode != 0:
-                    break
-                content = r.stdout
-                if content and content != self._last_content:
-                    self._last_content = content
-                    data = b"\x1b[2J\x1b[H" + content
+                new_bytes = b""
+                try:
+                    with open(self.output_file, "rb") as f:
+                        f.seek(self._read_pos)
+                        new_bytes = f.read()
+                except OSError:
+                    await asyncio.sleep(0.15)
+                    continue
+                if new_bytes:
+                    self._read_pos += len(new_bytes)
+                    prefix = b"\x1b[2J\x1b[H" if not sent_initial else b""
+                    sent_initial = True
                     try:
-                        await websocket.send_bytes(data)
+                        await websocket.send_bytes(prefix + new_bytes)
                     except Exception:
                         break
                 await asyncio.sleep(0.15)
@@ -106,9 +108,18 @@ class TerminalSession:
     def close(self):
         self._running = False
         subprocess.run(
+            ["tmux", "pipe-pane", "-o", "-t", self.name],
+            capture_output=True, timeout=3,
+        )
+        subprocess.run(
             ["tmux", "kill-session", "-t", self.name],
             capture_output=True, timeout=3,
         )
+        try:
+            if os.path.exists(self.output_file):
+                os.unlink(self.output_file)
+        except OSError:
+            pass
 
 
 def _verify_ws_token(token: str) -> bool:
