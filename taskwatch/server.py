@@ -1,11 +1,12 @@
 # ruff: noqa: E501
+import asyncio
 import json
 import secrets
 import subprocess
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
 
 from . import archive_cmds, directory_cmds, note_cmds, stats_cmds, task_cmds
@@ -40,6 +41,78 @@ def _verify_token(request: Request) -> None:
         token = auth[7:]
     if token != SERVER_TOKEN:
         raise HTTPException(status_code=403, detail="Invalid or missing token")
+
+
+_sessions: dict[str, "TerminalSession"] = {}
+
+
+class TerminalSession:
+    def __init__(self, name: str):
+        self.name = name
+        self._running = True
+        self._last_content = ""
+
+    def start(self, cmd: str, open_terminal: bool = False):
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", self.name],
+            capture_output=True, timeout=5,
+        )
+        subprocess.run(
+            ["tmux", "send-keys", "-t", self.name, cmd, "Enter"],
+            capture_output=True, timeout=5,
+        )
+        if open_terminal:
+            terminal = _detect_terminal()
+            if terminal:
+                attach_cmd = _build_terminal_cmd(
+                    terminal, f"tmux attach-session -t {self.name}"
+                )
+                subprocess.Popen(
+                    attach_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+
+    def write_input(self, data: bytes):
+        text = data.decode("utf-8", errors="replace")
+        subprocess.run(
+            ["tmux", "send-keys", "-t", self.name, "-l", text],
+            capture_output=True, timeout=2,
+        )
+
+    async def read_output(self, websocket: WebSocket):
+        loop = asyncio.get_event_loop()
+        try:
+            while self._running:
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: subprocess.run(
+                        ["tmux", "capture-pane", "-e", "-p", "-S", "-1000", "-t", self.name],
+                        capture_output=True, timeout=3,
+                    ),
+                )
+                if r.returncode != 0:
+                    break
+                content = r.stdout
+                if content and content != self._last_content:
+                    self._last_content = content
+                    data = b"\x1b[2J\x1b[H" + content
+                    try:
+                        await websocket.send_bytes(data)
+                    except Exception:
+                        break
+                await asyncio.sleep(0.15)
+        except Exception:
+            pass
+
+    def close(self):
+        self._running = False
+        subprocess.run(
+            ["tmux", "kill-session", "-t", self.name],
+            capture_output=True, timeout=3,
+        )
+
+
+def _verify_ws_token(token: str) -> bool:
+    return token == SERVER_TOKEN
 
 
 @app.get("/api/status")
@@ -209,9 +282,9 @@ def api_task_opencode(task_id: int, request: Request):
     if not opencode_path:
         raise HTTPException(status_code=400, detail="opencode not installed")
 
-    terminal = _detect_terminal()
-    if not terminal:
-        raise HTTPException(status_code=400, detail="No terminal found")
+    session_name = f"tw-ai-{task_id}"
+    if session_name in _sessions and _sessions[session_name]._running:
+        return {"status": "ok", "session_id": session_name, "reused": True}
 
     from .db import get_conn
 
@@ -223,6 +296,10 @@ def api_task_opencode(task_id: int, request: Request):
     ).fetchone()
     dir_name = row["dname"] if row else None
     arch_name = row["aname"] if row else None
+
+    dir_obj = directory_cmds.get_directory(task.directory_id)
+    project_root = dir_obj.project_path if dir_obj and dir_obj.project_path \
+        else str(Path(__file__).resolve().parent.parent)
 
     notes = note_cmds.list_notes(task.id)
     ctx = {
@@ -240,6 +317,7 @@ def api_task_opencode(task_id: int, request: Request):
         },
         "directory": dir_name,
         "archive": arch_name,
+        "project_path": project_root,
         "notes": [
             {
                 "date": n.date,
@@ -258,13 +336,48 @@ def api_task_opencode(task_id: int, request: Request):
         json.dump(ctx, fd, indent=2)
         ctx_file = fd.name
 
-    project_root = Path(__file__).resolve().parent.parent
-    cmd = _build_terminal_cmd(
-        terminal,
-        f"{opencode_path} run -f '{ctx_file}' -i --dir '{project_root}'",
+    session = TerminalSession(session_name)
+    cmd = f"{opencode_path} run -f '{ctx_file}' 'Help with: {task.name}' -i --dir '{project_root}'"
+    session.start(cmd, open_terminal=True)
+    _sessions[session_name] = session
+    return {"status": "ok", "session_id": session_name}
+
+
+@app.websocket("/ws/terminal/{session_id}")
+async def terminal_ws(websocket: WebSocket, session_id: str, token: str = Query("")):
+    if not _verify_ws_token(token):
+        await websocket.close(1008, "Unauthorized")
+        return
+    session = _sessions.get(session_id)
+    if not session:
+        await websocket.close(1008, "Session not found")
+        return
+
+    await websocket.accept()
+
+    async def reader():
+        await session.read_output(websocket)
+
+    async def writer():
+        try:
+            while True:
+                data = await websocket.receive_bytes()
+                session.write_input(data)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
+    reader_task = asyncio.create_task(reader())
+    writer_task = asyncio.create_task(writer())
+    done, pending = await asyncio.wait(
+        [reader_task, writer_task], return_when=asyncio.FIRST_COMPLETED,
     )
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return {"status": "ok", "message": f"opencode launched for: {task.name}"}
+    for task in pending:
+        task.cancel()
+    session.close()
+    if session_id in _sessions:
+        del _sessions[session_id]
 
 
 @app.get("/api/stats")
@@ -363,7 +476,15 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 .pt{font-size:.7rem;color:var(--text3);margin-top:3px;display:flex;justify-content:space-between}
 #main::-webkit-scrollbar{width:3px}
 #main::-webkit-scrollbar-thumb{background:var(--border);border-radius:0}
+#tp{display:none;position:fixed;bottom:0;left:0;right:0;height:65vh;z-index:200;background:var(--bg);border-top:1px solid var(--accent);flex-direction:column;animation:up .2s ease-out;box-shadow:0 0 20px rgba(229,57,53,.2)}
+#tp.open{display:flex}
+#tph{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--card);border-bottom:1px solid var(--border);flex-shrink:0}
+#tph span{font-size:.7rem;color:var(--accent);letter-spacing:.03em}
+#tpc{background:none;border:none;color:var(--text2);font-size:.8rem;cursor:pointer;font-family:inherit;padding:4px 8px}
+#tpc:active{color:var(--accent)}
+#tx{flex:1;overflow:hidden;padding:2px}
 </style>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.min.css">
 </head>
 <body>
 <div id="app">
@@ -378,7 +499,13 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
     <button onclick="navTo(this);showStats()"><span class="ni">[S]</span><span>Stats</span></button>
     <button onclick="navTo(this);document.getElementById('main').scrollTop=0"><span class="ni">[^]</span><span>Top</span></button>
   </div>
+  </div>
+<div id="tp">
+  <div id="tph"><span>[AI] opencode</span><button id="tpc" onclick="closeTerminal()">[X]</button></div>
+  <div id="tx"></div>
 </div>
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
 <script>
 var T=(new URLSearchParams(location.search).get('token')||localStorage.getItem('tw_token')||'');
 if(!localStorage.getItem('tw_token')&&T)localStorage.setItem('tw_token',T);
@@ -540,13 +667,34 @@ function showStats(){
     c.innerHTML=h;
   }).catch(function(e){gM().innerHTML='<div class="err">Error: '+e.message+'</div>'});
 }
+var TERM=null,TERM_WS=null,TERM_SID=null;
+function closeTerminal(){
+  if(TERM_WS){TERM_WS.close();TERM_WS=null}
+  if(TERM){TERM.dispose();TERM=null}
+  document.getElementById('tp').classList.remove('open');TERM_SID=null
+}
+function showTerminal(sid){
+  TERM_SID=sid;var tp=document.getElementById('tp');tp.classList.add('open');
+  var tx=document.getElementById('tx');tx.innerHTML='';
+  TERM=new Terminal({cursorBlink:true,cursorStyle:'block',fontSize:12,fontFamily:'ui-monospace,"SF Mono","JetBrains Mono",monospace',theme:{background:'#0a0a0f',foreground:'#d4d4dc',cursor:'#e53935',selectionBackground:'#e5393540',black:'#000',red:'#e53935',green:'#00e676',yellow:'#ff8c00',blue:'#00bcd4',magenta:'#e040fb',cyan:'#00e5ff',white:'#d4d4dc'},allowTransparency:true,rows:15});
+  var FA=new FitAddon.FitAddon();TERM.loadAddon(FA);TERM.open(tx);FA.fit();
+  var wsUrl='ws://'+location.host+'/ws/terminal/'+sid+'?token='+T;
+  TERM_WS=new WebSocket(wsUrl);TERM_WS.binaryType='arraybuffer';
+  TERM_WS.onopen=function(){TERM.focus()};
+  TERM_WS.onmessage=function(evt){TERM.write(new Uint8Array(evt.data))};
+  TERM_WS.onclose=function(){TERM.write('\r\n\x1b[1;31m--- session ended ---\x1b[0m\r\n')};
+  TERM.onData(function(d){if(TERM_WS&&TERM_WS.readyState===WebSocket.OPEN)TERM_WS.send(d)});
+  window.addEventListener('resize',function(){FA.fit()});
+}
 function openAI(id,name){
   var el=document.getElementById('aib');
   if(el)el.textContent='...';
+  if(TERM_SID){closeTerminal()}
   var s='/api/tasks/'+id+'/opencode';
   var q=s.indexOf('?')>=0?'&':'?';
   fetch(s+(T?q+'token='+T:''),{method:'POST',headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)throw Error(r.status+' '+r.statusText);return r.json()}).then(function(r){
     if(el){el.textContent='OK';el.style.color='var(--success)';el.style.borderColor='var(--success)';setTimeout(function(){el.textContent='[AI]';el.style.color='';el.style.borderColor=''},3000)}
+    showTerminal(r.session_id)
   }).catch(function(e){
     if(el){el.textContent='ERR';el.style.color='var(--danger)';el.style.borderColor='var(--danger)';setTimeout(function(){el.textContent='[AI]';el.style.color='';el.style.borderColor=''},3000)}
     var c=gM();if(c)c.innerHTML+='<div class="err" style="margin-top:8px">opencode: '+e.message+'</div>'
@@ -559,11 +707,31 @@ showArchives();
 """
 
 
-def get_url(host: str, port: int) -> str:
-    return f"http://{host}:{port}?token={SERVER_TOKEN}"
+def get_url(host: str, port: int, tailscale: bool = False) -> str:
+    ip = host
+    if tailscale:
+        ts = _get_tailscale_ip()
+        if ts:
+            ip = ts
+    return f"http://{ip}:{port}?token={SERVER_TOKEN}"
+
+
+def _get_tailscale_ip() -> str | None:
+    try:
+        r = subprocess.run(
+            ["tailscale", "ip", "-4"],
+            capture_output=True, text=True, timeout=5,
+        )
+        ip = r.stdout.strip()
+        return ip if ip else None
+    except Exception:
+        return None
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8080):
     import uvicorn
     print(f"TaskWatch+ server: {get_url(host, port)}")
+    ts_ip = _get_tailscale_ip()
+    if ts_ip:
+        print(f"Tailscale:         {get_url(ts_ip, port)}")
     uvicorn.run(app, host=host, port=port, log_level="info")

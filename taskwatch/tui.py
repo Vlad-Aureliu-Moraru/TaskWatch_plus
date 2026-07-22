@@ -5,38 +5,27 @@ import logging
 import os
 import queue
 import random
-import re
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
 import threading
-import time
 from collections.abc import Callable
 from datetime import date, datetime
-from enum import Enum, auto
 from functools import partial
 from pathlib import Path
 
 import urwid
 from urwid import (
     AttrMap,
-    Columns,
-    Edit,
-    Filler,
-    Frame,
     LineBox,
     ListBox,
     Overlay,
-    Pile,
     SimpleFocusListWalker,
     Text,
-    WidgetWrap,
 )
 
 from . import (
-    __version__,
     ai_chat,
     ai_client,
     archive_cmds,
@@ -53,7 +42,7 @@ from . import (
 )
 from . import db as db_mod
 from . import timer as timer_mod
-from .paths import CONFIG_PATH, DATA_DIR, TIMER_STATE_PATH
+from .paths import CONFIG_PATH, TIMER_STATE_PATH
 from .tui_helpers import (
     CELEBRATION_MESSAGES,
     COMMANDS,
@@ -69,9 +58,6 @@ from .tui_helpers import (
     _dur,
     _ensure_default_sounds,
     _find_opencode,
-    _generate_multi_tone_wav,
-    _generate_wav,
-    _gradient_attr,
     _hblock_bar,
     _heatmap_attr,
     _apply_pattern,
@@ -79,8 +65,6 @@ from .tui_helpers import (
     LEVEL_XP_THRESHOLDS,
     _level_theme,
     _progress_gradient_attr,
-    _paste_from_clipboard,
-    _play_sound,
     _BRAILLE_STEPS,
     _render_markdown_to_urwid,
     logger,
@@ -96,10 +80,8 @@ from .tui_overlays import (
 from .tui_widgets import (
     CommandEdit,
     ColorPickerWidget,
-    DAYS_OF_WEEK,
     DayPickerWidget,
     MainFrame,
-    NoTabColumns,
     SelectableText,
     VimListBox,
     _make_list_row,
@@ -2534,9 +2516,15 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             json.dump(ctx, fd, indent=2)
             ctx_file = fd.name
         project_root = Path(__file__).resolve().parent.parent
+        task_obj = task_cmds.get_task(self._selected_task_id)
+        if task_obj:
+            d_obj = directory_cmds.get_directory(task_obj.directory_id)
+            if d_obj and d_obj.project_path:
+                project_root = d_obj.project_path
+        task_name = ctx.get("task", {}).get("name", "task")
         cmd = _build_terminal_cmd(
             terminal,
-            f"{opencode_path} run -f '{ctx_file}' -i --dir '{project_root}'",
+            f"{opencode_path} run -f '{ctx_file}' 'Help with: {task_name}' -i --dir '{project_root}'",
         )
         subprocess.Popen(
             cmd,
@@ -2765,8 +2753,12 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         host = "0.0.0.0"
         port = 8080
         self._set_timed_caption("done", f"Starting server on *:{port}... ")
-        from .server import get_url
+        from .server import get_url, _get_tailscale_ip
         url = get_url(host, port)
+        ts_ip = _get_tailscale_ip()
+        msg = f"Server: {url}"
+        if ts_ip:
+            msg += f" | Tailscale: {get_url(ts_ip, port)}"
         self._server_running = True
         self._server_thread = threading.Thread(
             target=self._run_server_thread,
@@ -2774,7 +2766,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             daemon=True,
         )
         self._server_thread.start()
-        self._set_timed_caption("done", f"Server: {url} ")
+        self._set_timed_caption("done", f"{msg} ")
 
     def _run_server_thread(self, host: str, port: int) -> None:
         from .server import run_server
@@ -2788,8 +2780,13 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         elif sub == "status":
             running = getattr(self, "_server_running", False) and getattr(self, "_server_thread", None) and self._server_thread.is_alive()
             if running:
-                from .server import get_url
-                self._set_timed_caption("done", f"Server running — {get_url('0.0.0.0', 8080)} ")
+                from .server import get_url, _get_tailscale_ip
+                url = get_url('0.0.0.0', 8080)
+                ts_ip = _get_tailscale_ip()
+                msg = f"Server running — {url}"
+                if ts_ip:
+                    msg += f" | Tailscale: {get_url(ts_ip, 8080)}"
+                self._set_timed_caption("done", f"{msg} ")
             else:
                 self._set_timed_caption("error", "Server not running ")
         else:
