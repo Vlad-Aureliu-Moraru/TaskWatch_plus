@@ -2524,7 +2524,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         task_name = ctx.get("task", {}).get("name", "task")
         cmd = _build_terminal_cmd(
             terminal,
-            f"{opencode_path} run -f '{ctx_file}' 'Help with: {task_name}' -i --dir '{project_root}'",
+            f"{opencode_path} run 'Help with: {task_name}' -f '{ctx_file}' -i --dir '{project_root}'",
         )
         subprocess.Popen(
             cmd,

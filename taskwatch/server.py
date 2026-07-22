@@ -337,7 +337,7 @@ def api_task_opencode(task_id: int, request: Request):
         ctx_file = fd.name
 
     session = TerminalSession(session_name)
-    cmd = f"{opencode_path} run -f '{ctx_file}' 'Help with: {task.name}' -i --dir '{project_root}'"
+    cmd = f"{opencode_path} run 'Help with: {task.name}' -f '{ctx_file}' -i --dir '{project_root}'"
     session.start(cmd, open_terminal=True)
     _sessions[session_name] = session
     return {"status": "ok", "session_id": session_name}
