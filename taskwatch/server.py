@@ -633,6 +633,7 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 @keyframes bl{50%{opacity:0}}
 .ptog{background:none;border:none;color:var(--text3);font-size:.7rem;cursor:pointer;font-family:inherit;padding:0;line-height:1}
 .ptog:hover{color:var(--accent)}.ptog.on{color:var(--accent);font-weight:700}
+.agent-toggle{display:inline-flex;border:1px solid var(--border);overflow:hidden;line-height:1}.at-btn{padding:3px 10px;font-size:.65rem;font-weight:700;letter-spacing:.04em;border:none;background:transparent;color:var(--text3);cursor:pointer;font-family:inherit;transition:all .12s;-webkit-tap-highlight-color:transparent}.at-btn.active{background:var(--accent);color:#fff}.model-label{font-size:.65rem;color:var(--text2);padding:4px 6px;white-space:nowrap;line-height:1}
 @media(max-width:600px){
   .pm{max-width:100%}
   .pconv{max-height:45vh}
@@ -640,7 +641,7 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
   .pta{font-size:16px}
   .psb{height:44px;padding:10px 16px}
   .pc{padding:8px}
-  .pnc,.ptog{padding:8px}
+  .pnc{padding:8px}
   .ai-dir{padding:6px 10px}
   #main{overscroll-behavior:contain}
 }
@@ -671,6 +672,7 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 var T=(new URLSearchParams(location.search).get('token')||localStorage.getItem('tw_token')||'');
 if(!localStorage.getItem('tw_token')&&T)localStorage.setItem('tw_token',T);
 var NAV={},BC=document.getElementById('bc'),_TC=[],_PC=[],_DPC=[],_AF='all',_SID='',_DSID='',_PLAN=false;
+var _MODELS={default:{plan:'opencode-default',build:'opencode-default'},free:{plan:'deepseek-v4-flash-free',build:'deepseek-v4-flash-free'},light:{plan:'deepseek-v4-pro',build:'deepseek-v4-flash'},medium:{plan:'qwen3.7-plus',build:'minimax-m3'},hard:{plan:'glm-5.1',build:'qwen3.7-max'}};
 function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)throw Error(r.status+' '+r.statusText);return r.json()})}
 function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function qj(s){return s.replace(/'/g,"\\'")}
@@ -681,7 +683,8 @@ function sk(n){var h='',i=0;for(;i<n;i++){var w=i%2?'sk-w70':'sk-w50';h+='<div c
 function setBC(h){BC.innerHTML='<span class="b" onclick="showArchives()">Archives</span>'+h}
 function gM(){return document.getElementById('main')}
 function navTo(el){document.querySelectorAll('#bn button').forEach(function(b){b.classList.remove('act')});if(el)el.classList.add('act')}
-function togglePlan(el){_PLAN=!_PLAN;el.classList.toggle('on');if(_PLAN){var ag=document.getElementById('ag')||document.getElementById('dag');if(ag)ag.value='plan'}}
+function setAgent(el,agent){var tog=el.parentElement;tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});el.classList.add('active');_PLAN=(agent==='plan');updateModelDisplay()}
+function updateModelDisplay(){var pm=document.getElementById('pm')||document.getElementById('dpm');var config=pm?pm.value:'default';var at=document.querySelector('.at-btn.active');var agent=at?at.dataset.agent:'build';var m=_MODELS[config];var name=m?(m[agent]||config):config;var ml=document.getElementById('pml')||document.getElementById('dpml');if(ml)ml.textContent=name}
 if(window.visualViewport)window.visualViewport.addEventListener('resize',function(){var el=document.querySelector('.pin');if(el&&window.visualViewport.height<window.innerHeight)setTimeout(function(){el.scrollIntoView({behavior:'smooth',block:'nearest'})},300)});
 function togS(){var e=document.getElementById('sbar');e.classList.toggle('open');if(!e.classList.contains('open'))document.getElementById('si').value=''}
 function onS(){if(NAV.level=='tasks'&&_TC.length)renderTasks(_TC)}
@@ -774,16 +777,12 @@ function showTask(taskId,taskName,dirId,dirName,archId,archName){
       h+='</div>';
     }
     if(t.project_path){
-      var aopts=['build','plan','explore','general','summary','compaction','title'];
-      var asel='<select id="ag" class="ps">';
-      aopts.forEach(function(a){asel+='<option value="'+a+'">'+a+'</option>'});
-      asel+='</select>';
       var mopts=['default','free','light','medium','hard'];
-      var msel='<select id="pm" class="ps">';
+      var msel='<select id="pm" class="ps" onchange="updateModelDisplay()">';
       mopts.forEach(function(o){msel+='<option value="'+o+'">'+o+'</option>'});
       msel+='</select>';
-      h+='<div class="pc"><div class="pch">[AI] prompt <span style="display:flex;align-items:center;gap:6px"><span class="ptog" onclick="togglePlan(this)">[P]</span><span class="pnc" onclick="newChat()">[↻]</span></span></div>'
-        +'<div class="pct">'+asel+msel+'<input id="pcmd" class="ps pi" placeholder="command (optional)"></div>'
+      h+='<div class="pc"><div class="pch">[AI] prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newChat()">[↻]</span></span></div>'
+        +'<div class="pct"><div class="agent-toggle" id="atog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="pml">opencode-default</span><input id="pcmd" class="ps pi" placeholder="command (optional)"></div>'
         +'<div id="pconv" class="pconv"></div>'
         +'<div class="pin"><textarea id="ppt" class="pta" placeholder="Ask opencode..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\'"></textarea>'
         +'<button class="psb" onclick="sendPrompt('+t.id+')">▸</button></div></div>';
@@ -866,17 +865,13 @@ function showTerminal(sid){
   window.addEventListener('resize',function(){FA.fit()});
 }
 function showDirAI(id){
-  var aopts=['build','plan','explore','general','summary','compaction','title'];
-  var asel='<select id="dag" class="ps">';
-  aopts.forEach(function(a){asel+='<option value="'+a+'">'+a+'</option>'});
-  asel+='</select>';
   var mopts=['default','free','light','medium','hard'];
-  var msel='<select id="dpm" class="ps">';
+  var msel='<select id="dpm" class="ps" onchange="updateModelDisplay()">';
   mopts.forEach(function(o){msel+='<option value="'+o+'">'+o+'</option>'});
   msel+='</select>';
   var h='<span class="bk" onclick="exitDirAI()">&lt; '+esc(NAV.dirName)+'</span>'
-    +'<div class="pc"><div class="pch">[AI] directory prompt <span style="display:flex;align-items:center;gap:6px"><span class="ptog" onclick="togglePlan(this)">[P]</span><span class="pnc" onclick="newDirChat()">[↻]</span></span></div>'
-    +'<div class="pct">'+asel+msel+'<input id="dcmd" class="ps pi" placeholder="command (optional)"></div>'
+    +'<div class="pc"><div class="pch">[AI] directory prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newDirChat()">[↻]</span></span></div>'
+    +'<div class="pct"><div class="agent-toggle" id="datog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="dpml">opencode-default</span><input id="dcmd" class="ps pi" placeholder="command (optional)"></div>'
     +'<div id="dpconv" class="pconv"></div>'
     +'<div class="pin"><textarea id="dppt" class="pta" placeholder="Ask opencode about this project..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\'"></textarea>'
     +'<button class="psb" id="dsb" onclick="sendDirPrompt('+id+')">▸</button></div></div>';
@@ -889,19 +884,19 @@ function sendDirPrompt(id){
   if(!prompt)return;
   input.value='';
   input.style.height='';
-  if(_PLAN){prompt='[PLAN] Do NOT write, edit, or create any files. Only read files and output analysis and recommendations. Plan: '+prompt;var ag0=document.getElementById('dag');if(ag0)ag0.value='plan'}
+  if(_PLAN){prompt='[PLAN] Do NOT write, edit, or create any files. Only read files and output analysis and recommendations. Plan: '+prompt}
   _DPC.push({role:'user',text:prompt});
   renderDirConv();
   var btn=document.getElementById('dsb');
   btn.disabled=true;btn.textContent='...';
-  var ag=document.getElementById('dag');
+  var ag=document.querySelector('.at-btn.active');
   var cmd=document.getElementById('dcmd');
   var pm=document.getElementById('dpm');
   var aiIdx=_DPC.length;
   _DPC.push({role:'ai',text:'',thinking:true});
   renderDirConv();
   var url='/api/directories/'+id+'/opencode/prompt'+(T?'?token='+T:'');
-  var body={prompt:prompt,agent:ag?ag.value:'build',command:cmd?cmd.value:'',session_id:_DSID,config:pm?pm.value:'default'};
+  var body={prompt:prompt,agent:ag?ag.dataset.agent:'build',command:cmd?cmd.value:'',session_id:_DSID,config:pm?pm.value:'default'};
   fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){
     if(!r.ok)throw Error(r.status+' '+r.statusText);
     var reader=r.body.getReader();
@@ -928,7 +923,7 @@ function sendDirPrompt(id){
   }).catch(function(e){_DPC.push({role:'error',text:e.message});renderDirConv();btn.disabled=false;btn.textContent='▸'});
   input.focus();
 }
-function newDirChat(){_DPC=[];_DSID='';_PLAN=false;document.querySelector('.ptog.on')&&document.querySelector('.ptog.on').classList.remove('on');renderDirConv()}
+function newDirChat(){_DPC=[];_DSID='';_PLAN=false;var tog=document.getElementById('datog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderDirConv();updateModelDisplay()}
 function renderDirConv(){
   var el=document.getElementById('dpconv');
   if(!el)return;
@@ -941,26 +936,26 @@ function renderDirConv(){
   el.innerHTML=h;
   el.scrollTop=el.scrollHeight;
 }
-function newChat(){_PC=[];_SID='';_PLAN=false;document.querySelector('.ptog.on')&&document.querySelector('.ptog.on').classList.remove('on');renderConv();document.getElementById('ppt').value=''}
+function newChat(){_PC=[];_SID='';_PLAN=false;var tog=document.getElementById('atog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderConv();document.getElementById('ppt').value='';updateModelDisplay()}
 function sendPrompt(id){
   var input=document.getElementById('ppt');
   var prompt=input.value.trim();
   if(!prompt)return;
   input.value='';
   input.style.height='';
-  if(_PLAN){prompt='[PLAN] Do NOT write, edit, or create any files. Only read files and output analysis and recommendations. Plan: '+prompt;var ag0=document.getElementById('ag');if(ag0)ag0.value='plan'}
+  if(_PLAN){prompt='[PLAN] Do NOT write, edit, or create any files. Only read files and output analysis and recommendations. Plan: '+prompt}
   _PC.push({role:'user',text:prompt});
   renderConv();
   var btn=document.querySelector('.psb');
   btn.disabled=true;btn.textContent='...';
-  var ag=document.getElementById('ag');
+  var ag=document.querySelector('.at-btn.active');
   var cmd=document.getElementById('pcmd');
   var pm=document.getElementById('pm');
   var aiIdx=_PC.length;
   _PC.push({role:'ai',text:'',thinking:true});
   renderConv();
   var url='/api/tasks/'+id+'/opencode/prompt'+(T?'?token='+T:'');
-  var body={prompt:prompt,agent:ag?ag.value:'build',command:cmd?cmd.value:'',session_id:_SID,config:pm?pm.value:'default'};
+  var body={prompt:prompt,agent:ag?ag.dataset.agent:'build',command:cmd?cmd.value:'',session_id:_SID,config:pm?pm.value:'default'};
   fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){
     if(!r.ok)throw Error(r.status+' '+r.statusText);
     var reader=r.body.getReader();
