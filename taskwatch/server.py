@@ -387,11 +387,13 @@ def api_directory_opencode(dir_id: int, request: Request):
     return {"status": "ok", "session_id": session_name}
 
 
+_ACTIVE_CONVOS: dict[str, str] = {}  # "task_42" → "running" | "done"
+
+
 async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = None, convo_key: tuple[str, int] | None = None):
     """Async generator that runs an opencode subprocess and yields SSE lines."""
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
-    proc_holder: list[subprocess.Popen | None] = [None]
 
     def reader():
         proc_env = os.environ.copy()
@@ -405,7 +407,6 @@ async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = No
             cwd=cwd,
             env=proc_env,
         )
-        proc_holder[0] = proc
         try:
             for line in proc.stdout:
                 if convo_key:
@@ -422,6 +423,8 @@ async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = No
         except Exception:
             pass
         finally:
+            if convo_key:
+                _ACTIVE_CONVOS[f"{convo_key[0]}_{convo_key[1]}"] = "done"
             loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
 
     thread = threading.Thread(target=reader, daemon=True)
@@ -436,10 +439,6 @@ async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = No
             if data:
                 yield f"data: {data.rstrip()}\n\n"
     finally:
-        proc = proc_holder[0]
-        if proc and proc.returncode is None:
-            proc.kill()
-            proc.wait()
         thread.join(timeout=2)
 
 
@@ -488,6 +487,7 @@ async def api_task_opencode_prompt(task_id: int, request: Request):
         if os.path.exists(cfg_path):
             extra_env = {"OPENCODE_CONFIG": cfg_path}
 
+    _ACTIVE_CONVOS[f"task_{task_id}"] = "running"
     return StreamingResponse(_opencode_stream(cmd, dir_obj.project_path, extra_env, convo_key=("task", task_id)), media_type="text/event-stream")
 
 
@@ -526,6 +526,7 @@ async def api_directory_opencode_prompt(dir_id: int, request: Request):
         cfg_path = os.path.expanduser(f"~/.config/opencode/configs/{config}.json")
         if os.path.exists(cfg_path):
             extra_env = {"OPENCODE_CONFIG": cfg_path}
+    _ACTIVE_CONVOS[f"dir_{dir_id}"] = "running"
     return StreamingResponse(_opencode_stream(cmd, dir_obj.project_path, extra_env, convo_key=("dir", dir_id)), media_type="text/event-stream")
 
 
@@ -574,6 +575,19 @@ def api_directory_opencode_convo(dir_id: int, request: Request):
 def api_directory_opencode_clear_convo(dir_id: int, request: Request):
     _verify_token(request)
     _clear_convo("dir", dir_id)
+    return {"status": "ok"}
+
+
+@app.get("/api/ai-convos/status")
+def api_ai_convos_status(request: Request):
+    _verify_token(request)
+    return dict(_ACTIVE_CONVOS)
+
+
+@app.post("/api/ai-convos/{key}/dismiss")
+def api_ai_convo_dismiss(key: str, request: Request):
+    _verify_token(request)
+    _ACTIVE_CONVOS.pop(key, None)
     return {"status": "ok"}
 
 
@@ -764,11 +778,12 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
     <div id="bc"></div>
   </div>
   <div id="main"></div>
-  <div id="bn">
-    <button class="act" onclick="navTo(this);showArchives()"><span class="ni">[A]</span><span>Archives</span></button>
-    <button onclick="navTo(this);showStats()"><span class="ni">[S]</span><span>Stats</span></button>
-    <button onclick="navTo(this);document.getElementById('main').scrollTop=0"><span class="ni">[^]</span><span>Top</span></button>
-  </div>
+    <div id="bn">
+        <button class="act" onclick="navTo(this);showArchives()"><span class="ni">[A]</span><span>Archives</span></button>
+        <button onclick="navTo(this);showStats()"><span class="ni">[S]</span><span>Stats</span></button>
+        <button onclick="navTo(this);showAFK()"><span class="ni" id="afkbtn">[AFK]</span><span>AFK</span></button>
+        <button onclick="navTo(this);document.getElementById('main').scrollTop=0"><span class="ni">[^]</span><span>Top</span></button>
+      </div>
   </div>
 <div id="tp">
   <div id="tph"><span>[AI] opencode</span><button id="tpc" onclick="closeTerminal()">[X]</button></div>
@@ -783,6 +798,7 @@ var NAV={},BC=document.getElementById('bc'),_TC=[],_PC=[],_DPC=[],_AF='all',_SID
 var _MODELS={default:{plan:'opencode-default',build:'opencode-default'},free:{plan:'deepseek-v4-flash-free',build:'deepseek-v4-flash-free'},light:{plan:'deepseek-v4-pro',build:'deepseek-v4-flash'},medium:{plan:'qwen3.7-plus',build:'minimax-m3'},hard:{plan:'glm-5.1',build:'qwen3.7-max'}};
 var _CMDS=['taskwatch-attach','taskwatch-plan','taskwatch-next','taskwatch-review','done','compact'];
 var _PBUSY=false,_PABORT=null,_PQ=[],_DPBUSY=false,_DPABORT=null,_DPQ=[];
+setTimeout(function updateBadge(){updateAFKBadge();setTimeout(updateBadge,30000)},1000);
 function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)throw Error(r.status+' '+r.statusText);return r.json()})}
 function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function qj(s){return s.replace(/'/g,"\\'")}
@@ -882,6 +898,7 @@ function showTasks(dirId,dirName,archId,archName){
   }).catch(function(e){gM().innerHTML='<div class="err">Error: '+e.message+'</div>'});
 }
 function showTask(taskId,taskName,dirId,dirName,archId,archName){
+  fetch('/api/ai-convos/task_'+taskId+'/dismiss?token='+T,{method:'POST'});
   NAV={level:'task',taskId:taskId,taskName:taskName,dirId:dirId,dirName:dirName,archId:archId,archName:archName};_TC=[];_PC=[];_SID='';
   setBC('<span class="s">/</span><span class="b" onclick="showDirs('+archId+',\''+qj(esc(archName))+'\')">'+esc(archName)+'</span><span class="s">/</span><span class="b" onclick="showTasks('+dirId+',\''+qj(esc(dirName))+'\','+archId+',\''+qj(esc(archName))+'\')">'+esc(dirName)+'</span><span class="s">/</span><span>'+esc(taskName)+'</span>');
   var c=gM();c.innerHTML='<div class="sk"><div class="sk-l sk-w70"></div><div class="sk-l sk-w50"></div><div class="sk-l sk-w40"></div></div>';
@@ -967,6 +984,42 @@ function showStats(){
     c.innerHTML=h;
   }).catch(function(e){gM().innerHTML='<div class="err">Error: '+e.message+'</div>'});
 }
+function updateAFKBadge(){
+  api('/ai-convos/status').then(function(s){
+    var n=Object.values(s).filter(function(v){return v==='done'}).length;
+    var el=document.getElementById('afkbtn');
+    if(el)el.textContent='[AFK'+(n?n:'')+']';
+  }).catch(function(){});
+}
+function goToAFKTask(id){api('/tasks/'+id).then(function(t){api('/directories/'+t.directory_id).then(function(d){showTask(id,t.name,d.id,d.name,d.archive_id||0,d.archive_name||'')})})}
+function goToAFKDir(id){showDirAI(id)}
+function showAFK(){
+  NAV={level:'afk'};_TC=[];setBC('<span class="s">/</span><span>AFK Jobs</span>');sk(3);
+  api('/ai-convos/status').then(function(statuses){
+    var keys=Object.keys(statuses);
+    if(!keys.length){gM().innerHTML='<div class="emp">No AI jobs while you were away</div>';return}
+    var items=[],rem=keys.length;
+    keys.forEach(function(k){
+      var p=k.split('_'),type=p[0],id=parseInt(p[1]);
+      (type==='task'?api('/tasks/'+id).then(function(t){return{key:k,type:'task',id:id,status:statuses[k],name:t.name,dirId:t.directory_id}})
+        :api('/directories/'+id).then(function(d){return{key:k,type:'dir',id:id,status:statuses[k],name:d.name}})
+      ).then(function(item){
+        items.push(item);
+        if(items.length===rem){
+          var h='';
+          items.sort(function(a,b){return a.key.localeCompare(b.key)});
+          items.forEach(function(item){
+            var click=item.type==='task'?'goToAFKTask('+item.id+')':'goToAFKDir('+item.id+')';
+            var st=item.status==='running'?'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ffc107;margin-right:4px"></span>running'
+              :'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4caf50;margin-right:4px"></span>done';
+            h+='<div class="c ca" onclick="'+click+'"><div class="ch"><span class="cn">'+esc(item.name)+'</span>'+st+'</div></div>';
+          });
+          gM().innerHTML=h;
+        }
+      });
+    });
+  });
+}
 var TERM=null,TERM_WS=null,TERM_SID=null;
 function closeTerminal(){
   if(TERM_WS){TERM_WS.close();TERM_WS=null}
@@ -987,6 +1040,7 @@ function showTerminal(sid){
   window.addEventListener('resize',function(){FA.fit()});
 }
 function showDirAI(id){
+  fetch('/api/ai-convos/dir_'+id+'/dismiss?token='+T,{method:'POST'});
   var mopts=['default','free','light','medium','hard'];
   var msel='<select id="dpm" class="ps" onchange="updateModelDisplay()">';
   mopts.forEach(function(o){msel+='<option value="'+o+'">'+o+'</option>'});
@@ -1052,7 +1106,7 @@ function _doSendDir(raw,id){
   }).catch(function(e){if(e.name==='AbortError'){_DPC.push({role:'error',text:'Cancelled'})}else{_DPC.push({role:'error',text:e.message})};renderDirConv();dequeueDir()});
   document.getElementById('dppt').focus();
 }
-function newDirChat(){fetch('/api/directories/'+NAV.dirId+'/opencode/convo?token='+T,{method:'DELETE'});if(_DPABORT){_DPABORT.abort();_DPABORT=null}_DPBUSY=false;_DPC=[];_DSID='';_DPQ=[];_PLAN=false;var tog=document.getElementById('datog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderDirConv();updateModelDisplay();updateDirBtn()}
+function newDirChat(){fetch('/api/directories/'+NAV.dirId+'/opencode/convo?token='+T,{method:'DELETE'});fetch('/api/ai-convos/dir_'+NAV.dirId+'/dismiss?token='+T,{method:'POST'});if(_DPABORT){_DPABORT.abort();_DPABORT=null}_DPBUSY=false;_DPC=[];_DSID='';_DPQ=[];_PLAN=false;var tog=document.getElementById('datog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderDirConv();updateModelDisplay();updateDirBtn()}
 function renderDirConv(){
   var el=document.getElementById('dpconv');
   if(!el)return;
@@ -1065,7 +1119,7 @@ function renderDirConv(){
   el.innerHTML=h;
   el.scrollTop=el.scrollHeight;
 }
-function newChat(){fetch('/api/tasks/'+NAV.taskId+'/opencode/convo?token='+T,{method:'DELETE'});if(_PABORT){_PABORT.abort();_PABORT=null}_PBUSY=false;_PC=[];_SID='';_PQ=[];_PLAN=false;var tog=document.getElementById('atog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderConv();document.getElementById('ppt').value='';updateModelDisplay();updateTaskBtn()}
+function newChat(){fetch('/api/tasks/'+NAV.taskId+'/opencode/convo?token='+T,{method:'DELETE'});fetch('/api/ai-convos/task_'+NAV.taskId+'/dismiss?token='+T,{method:'POST'});if(_PABORT){_PABORT.abort();_PABORT=null}_PBUSY=false;_PC=[];_SID='';_PQ=[];_PLAN=false;var tog=document.getElementById('atog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderConv();document.getElementById('ppt').value='';updateModelDisplay();updateTaskBtn()}
 function sendPrompt(id){
   var input=document.getElementById('ppt');
   var raw=input.value.trim();
