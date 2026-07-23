@@ -31,8 +31,17 @@ def _read_convo(prefix: str, id: int) -> list[dict]:
     path = _convo_path(prefix, id)
     if not path.exists():
         return []
+    result = []
     with open(path) as f:
-        return [json.loads(line) for line in f if line.strip()]
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                result.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return result
 
 
 def _append_convo(prefix: str, id: int, entry: dict):
@@ -397,15 +406,15 @@ async def _opencode_stream(cmd: list[str], cwd: str, extra_env: dict | None = No
         )
         try:
             for line in proc.stdout:
-                if convo_key and line.startswith("data: "):
-                    data = line[6:].strip()
-                    if data != "[DONE]":
+                if convo_key:
+                    stripped = line.rstrip()
+                    if stripped:
                         try:
-                            evt = json.loads(data)
+                            evt = json.loads(stripped)
                             if evt.get("type") == "text" and evt.get("part", {}).get("text"):
                                 _append_convo(convo_key[0], convo_key[1], {"role": "ai", "text": evt["part"]["text"], "session_id": evt.get("sessionID", "")})
                         except json.JSONDecodeError:
-                            pass
+                            _append_convo(convo_key[0], convo_key[1], {"role": "ai", "text": stripped})
                 loop.call_soon_threadsafe(queue.put_nowait, ("data", line))
             proc.wait()
         except Exception:
@@ -763,8 +772,8 @@ var _PBUSY=false,_PABORT=null,_PQ=[],_DPBUSY=false,_DPABORT=null,_DPQ=[];
 function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)throw Error(r.status+' '+r.statusText);return r.json()})}
 function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function qj(s){return s.replace(/'/g,"\\'")}
-function loadTaskConvo(id){api('/tasks/'+id+'/opencode/convo').then(function(msgs){if(!msgs||!msgs.length)return;_PC=msgs;for(var i=_PC.length-1;i>=0;i--){if(_PC[i].session_id){_SID=_PC[i].session_id;break}}renderConv()})}
-function loadDirConvo(id){api('/directories/'+id+'/opencode/convo').then(function(msgs){if(!msgs||!msgs.length)return;_DPC=msgs;for(var i=_DPC.length-1;i>=0;i--){if(_DPC[i].session_id){_DSID=_DPC[i].session_id;break}}renderDirConv()})}
+function loadTaskConvo(id){api('/tasks/'+id+'/opencode/convo').then(function(msgs){if(!msgs||!msgs.length)return;_PC=msgs;for(var i=_PC.length-1;i>=0;i--){if(_PC[i].session_id){_SID=_PC[i].session_id;break}}renderConv()}).catch(function(e){console.error('loadTaskConvo',e);var el=document.getElementById('pconv');if(el)el.innerHTML='<div class="pme">Load failed: '+esc(e.message)+'</div>'})}
+function loadDirConvo(id){api('/directories/'+id+'/opencode/convo').then(function(msgs){if(!msgs||!msgs.length)return;_DPC=msgs;for(var i=_DPC.length-1;i>=0;i--){if(_DPC[i].session_id){_DSID=_DPC[i].session_id;break}}renderDirConv()}).catch(function(e){console.error('loadDirConvo',e);var el=document.getElementById('dpconv');if(el)el.innerHTML='<div class="pme">Load failed: '+esc(e.message)+'</div>'})}
 function uB(n){return'<span class="b bu'+n+'">U'+n+'</span>'}
 function dB(n){return'<span class="b bd'+n+'">D'+n+'</span>'}
 function pRing(p){var c=Math.PI*36,o=c*(1-Math.min(p,100)/100);return'<svg width="42" height="42" viewBox="0 0 44 44"><circle cx="22" cy="22" r="18" fill="none" stroke="var(--border)" stroke-width="4"/><circle cx="22" cy="22" r="18" fill="none" stroke="var(--accent)" stroke-width="4" stroke-linecap="round" transform="rotate(-90 22 22)" stroke-dasharray="'+c+'" stroke-dashoffset="'+o+'"/><text x="22" y="22" text-anchor="middle" dominant-baseline="central" fill="var(--text2)" font-size="11" font-weight="700">'+Math.round(p)+'%</text></svg>'}
