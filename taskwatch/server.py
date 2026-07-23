@@ -766,8 +766,8 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 .psb{flex-shrink:0;padding:6px 12px;border-radius:0;font-size:.72rem;font-weight:600;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-family:inherit;transition:all .12s;height:32px}
 .psb:active{background:var(--accent);color:#fff}
 .psb:disabled{opacity:.4;cursor:default}
-.pma.thinking:after{content:'█';animation:bl 1s step-end infinite;color:var(--accent);margin-left:2px}
-@keyframes bl{50%{opacity:0}}
+.pma.thinking:after{content:'⠋';animation:br 1s steps(10) infinite;color:var(--accent);margin-left:2px;display:inline-block}
+@keyframes br{0%{content:'⠋'}10%{content:'⠙'}20%{content:'⠹'}30%{content:'⠸'}40%{content:'⠼'}50%{content:'⠴'}60%{content:'⠦'}70%{content:'⠧'}80%{content:'⠇'}90%{content:'⠏'}100%{content:'⠋'}}
 .ptog{background:none;border:none;color:var(--text3);font-size:.7rem;cursor:pointer;font-family:inherit;padding:0;line-height:1}
 .ptog:hover{color:var(--accent)}.ptog.on{color:var(--accent);font-weight:700}
 .agent-toggle{display:inline-flex;border:1px solid var(--border);overflow:hidden;line-height:1}.at-btn{padding:3px 10px;font-size:.65rem;font-weight:700;letter-spacing:.04em;border:none;background:transparent;color:var(--text3);cursor:pointer;font-family:inherit;transition:all .12s;-webkit-tap-highlight-color:transparent}.at-btn.active{background:var(--accent);color:#fff}.model-label{font-size:.65rem;color:var(--text2);padding:4px 6px;white-space:nowrap;line-height:1}
@@ -955,7 +955,7 @@ function showTask(taskId,taskName,dirId,dirName,archId,archName){
       h+='<div class="pc"><div class="pch">[AI] prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newChat()">[↻]</span></span></div>'
         +'<div class="pct"><div class="agent-toggle" id="atog"><button class="at-btn'+(_SAVED_AGENT==='build'?' active':'')+'" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn'+(_SAVED_AGENT==='plan'?' active':'')+'" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="pml">opencode-default</span></div>'
         +'<div id="pconv" class="pconv"></div>'
-        +'<div class="pin"><div class="cmdmenu" id="cmdm"></div><textarea id="ppt" class="pta" placeholder="Ask opencode..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'cmdm\')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();onTaskBtnClick('+t.id+')}"></textarea>'
+        +'<div class="pin"><div class="cmdmenu" id="cmdm"></div><textarea id="ppt" class="pta" placeholder="Ask the TaskWatcher" rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'cmdm\')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();onTaskBtnClick('+t.id+')}"></textarea>'
         +'<button class="psb" id="psb" onclick="onTaskBtnClick('+t.id+')">▸</button></div></div>';
     }
     c.innerHTML=h;if(t.project_path)loadTaskConvo(taskId);
@@ -1081,7 +1081,7 @@ function showDirAI(id){
     +'<div class="pc"><div class="pch">[AI] directory prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newDirChat()">[↻]</span></span></div>'
     +'<div class="pct"><div class="agent-toggle" id="datog"><button class="at-btn'+(_SAVED_AGENT==='build'?' active':'')+'" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn'+(_SAVED_AGENT==='plan'?' active':'')+'" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="dpml">opencode-default</span></div>'
     +'<div id="dpconv" class="pconv"></div>'
-    +'<div class="pin"><div class="cmdmenu" id="dcmdm"></div><textarea id="dppt" class="pta" placeholder="Ask opencode about this project..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'dcmdm\')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();onDirBtnClick('+id+')}"></textarea>'
+    +'<div class="pin"><div class="cmdmenu" id="dcmdm"></div><textarea id="dppt" class="pta" placeholder="Ask the TaskWatcher" rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'dcmdm\')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();onDirBtnClick('+id+')}"></textarea>'
     +'<button class="psb" id="dsb" onclick="onDirBtnClick('+id+')">▸</button></div></div>';
   gM().innerHTML=h;loadDirConvo(id);
 }
