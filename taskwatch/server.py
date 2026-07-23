@@ -735,6 +735,7 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 #bn button{flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;padding:10px 0 8px;border:none;background:transparent;color:var(--text3);font-size:.6rem;cursor:pointer;transition:color .12s,border-color .12s;line-height:1.2;border-top:2px solid transparent;font-family:inherit;min-height:48px;-webkit-tap-highlight-color:transparent}
 #bn button.act{color:var(--accent);border-top-color:var(--accent);text-shadow:0 0 6px rgba(229,57,53,.4)}
 #bn button .ni{font-size:.82rem;letter-spacing:.02em}
+#qic{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;padding:10px 0 8px;min-height:48px;font-size:.6rem;color:var(--text3);font-family:inherit;line-height:1.2;border-top:2px solid transparent;flex:0 0 auto}
 .pb{height:4px;background:var(--border);border-radius:0;margin-top:7px;overflow:hidden}
 .pf{height:100%;border-radius:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .3s}
 .pt{font-size:.7rem;color:var(--text3);margin-top:3px;display:flex;justify-content:space-between}
@@ -805,6 +806,7 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
         <button class="act" onclick="navTo(this);showArchives()"><span class="ni">[A]</span><span>Archives</span></button>
         <button onclick="navTo(this);showStats()"><span class="ni">[S]</span><span>Stats</span></button>
         <button onclick="navTo(this);showAFK()"><span class="ni" id="afkbtn">[AFK]</span><span>AFK</span></button>
+        <div id="qic"><span class="ni" id="qs">[▸]</span><span id="qsl">Free</span></div>
       </div>
   </div>
 <div id="tp">
@@ -823,6 +825,7 @@ var _PBUSY=false,_PABORT=null,_PQ=[],_DPBUSY=false,_DPABORT=null,_DPQ=[];
 var _SAVED_AGENT=localStorage.getItem('tw_agent')||'build',_SAVED_CONFIG=localStorage.getItem('tw_config')||'default';
 _PLAN=(_SAVED_AGENT==='plan');
 setTimeout(function updateBadge(){updateAFKBadge();setTimeout(updateBadge,30000)},1000);
+setTimeout(updateQueueUI,100);
 function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)return r.json().then(function(e){throw Error(r.status+' '+r.statusText+': '+(e.detail||JSON.stringify(e)))}).catch(function(){throw Error(r.status+' '+r.statusText)});return r.json()})}
 function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function qj(s){return s.replace(/'/g,"\\'")}
@@ -845,8 +848,9 @@ function cancelTask(){if(_PABORT){_PABORT.abort();_PABORT=null}}
 function cancelDir(){if(_DPABORT){_DPABORT.abort();_DPABORT=null}}
 function dequeueTask(){_PBUSY=false;_PABORT=null;if(_PQ.length>0){var n=_PQ.shift();_doSendTask(n.raw,n.id)}else{updateTaskBtn()}}
 function dequeueDir(){_DPBUSY=false;_DPABORT=null;if(_DPQ.length>0){var n=_DPQ.shift();_doSendDir(n.raw,n.id)}else{updateDirBtn()}}
-function updateTaskBtn(){var btn=document.getElementById('psb');if(!btn)return;btn.textContent=_PQ.length>0?'■ ('+_PQ.length+')':'▸'}
-function updateDirBtn(){var btn=document.getElementById('dsb');if(!btn)return;btn.textContent=_DPQ.length>0?'■ ('+_DPQ.length+')':'▸'}
+function updateTaskBtn(){var btn=document.getElementById('psb');if(!btn)return;btn.textContent=_PQ.length>0?'■ ('+_PQ.length+')':'▸';updateQueueUI()}
+function updateDirBtn(){var btn=document.getElementById('dsb');if(!btn)return;btn.textContent=_DPQ.length>0?'■ ('+_DPQ.length+')':'▸';updateQueueUI()}
+function updateQueueUI(){var el=document.getElementById('qs'),lb=document.getElementById('qsl');if(!el)return;var q=_PQ.length+_DPQ.length,busy=_PBUSY||_DPBUSY;el.textContent=busy?'[■'+(q?' '+q:'')+']':'[▸]';if(lb)lb.textContent=busy?(q?'Queue '+q:'Active'):'Free'}
 function fixViewport(){
   if(!window.visualViewport)return;
   var vh=window.visualViewport.height,d=window.innerHeight-vh;
