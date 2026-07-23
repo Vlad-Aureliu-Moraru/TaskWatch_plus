@@ -820,6 +820,8 @@ var NAV={},BC=document.getElementById('bc'),_TC=[],_PC=[],_DPC=[],_AF='all',_SID
 var _MODELS={default:{plan:'opencode-default',build:'opencode-default'},free:{plan:'deepseek-v4-flash-free',build:'deepseek-v4-flash-free'},light:{plan:'deepseek-v4-pro',build:'deepseek-v4-flash'},medium:{plan:'qwen3.7-plus',build:'minimax-m3'},hard:{plan:'glm-5.1',build:'qwen3.7-max'}};
 var _CMDS=['taskwatch-attach','taskwatch-plan','taskwatch-next','taskwatch-review','done','compact'];
 var _PBUSY=false,_PABORT=null,_PQ=[],_DPBUSY=false,_DPABORT=null,_DPQ=[];
+var _SAVED_AGENT=localStorage.getItem('tw_agent')||'build',_SAVED_CONFIG=localStorage.getItem('tw_config')||'default';
+_PLAN=(_SAVED_AGENT==='plan');
 setTimeout(function updateBadge(){updateAFKBadge();setTimeout(updateBadge,30000)},1000);
 function api(p){var s=p.indexOf('?')>=0?'&':'?';return fetch('/api'+p+(T?s+'token='+T:''),{headers:{Accept:'application/json'}}).then(function(r){if(!r.ok)return r.json().then(function(e){throw Error(r.status+' '+r.statusText+': '+(e.detail||JSON.stringify(e)))}).catch(function(){throw Error(r.status+' '+r.statusText)});return r.json()})}
 function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
@@ -833,8 +835,8 @@ function sk(n){var h='',i=0;for(;i<n;i++){var w=i%2?'sk-w70':'sk-w50';h+='<div c
 function setBC(h){BC.innerHTML='<span class="b" onclick="showArchives()">Archives</span>'+h}
 function gM(){return document.getElementById('main')}
 function navTo(el){document.querySelectorAll('#bn button').forEach(function(b){b.classList.remove('act')});if(el)el.classList.add('act')}
-function setAgent(el,agent){var tog=el.parentElement;tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});el.classList.add('active');_PLAN=(agent==='plan');updateModelDisplay()}
-function updateModelDisplay(){var pm=document.getElementById('pm')||document.getElementById('dpm');var config=pm?pm.value:'default';var at=document.querySelector('.at-btn.active');var agent=at?at.dataset.agent:'build';var m=_MODELS[config];var name=m?(m[agent]||config):config;var ml=document.getElementById('pml')||document.getElementById('dpml');if(ml)ml.textContent=name}
+function setAgent(el,agent){var tog=el.parentElement;tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});el.classList.add('active');_PLAN=(agent==='plan');localStorage.setItem('tw_agent',agent);_SAVED_AGENT=agent;updateModelDisplay()}
+function updateModelDisplay(){var pm=document.getElementById('pm')||document.getElementById('dpm');var config=pm?pm.value:'default';localStorage.setItem('tw_config',config);_SAVED_CONFIG=config;var at=document.querySelector('.at-btn.active');var agent=at?at.dataset.agent:'build';var m=_MODELS[config];var name=m?(m[agent]||config):config;var ml=document.getElementById('pml')||document.getElementById('dpml');if(ml)ml.textContent=name}
 function onCmdInput(el,menuId){var menu=document.getElementById(menuId);if(!menu)return;var v=el.value.trim();if(v.startsWith('/')&&v.indexOf(' ')===-1){var q=v.slice(1).toLowerCase();var hits=_CMDS.filter(function(c){return c.toLowerCase().indexOf(q)>=0});menu.innerHTML='';hits.forEach(function(c){var mi=document.createElement('div');mi.className='cmdmi';mi.textContent='/'+c;mi.onclick=function(){insertCmd(c,el.id)};menu.appendChild(mi)});menu.classList.add('open')}else{menu.classList.remove('open')}}
 function insertCmd(cmd,inputId){var ta=document.getElementById(inputId);if(!ta)return;ta.value='/'+cmd;ta.style.height='';ta.style.height=Math.min(ta.scrollHeight,80)+'px';var menu=ta.parentElement.querySelector('.cmdmenu');if(menu)menu.classList.remove('open');ta.focus()}
 function onTaskBtnClick(id){if(_PBUSY){cancelTask()}else{sendPrompt(id)}}
@@ -948,10 +950,10 @@ function showTask(taskId,taskName,dirId,dirName,archId,archName){
     if(t.project_path){
       var mopts=['default','free','light','medium','hard'];
       var msel='<select id="pm" class="ps" onchange="updateModelDisplay()">';
-      mopts.forEach(function(o){msel+='<option value="'+o+'">'+o+'</option>'});
+      mopts.forEach(function(o){msel+='<option value="'+o+'"'+(o===_SAVED_CONFIG?' selected':'')+'>'+o+'</option>'});
       msel+='</select>';
       h+='<div class="pc"><div class="pch">[AI] prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newChat()">[↻]</span></span></div>'
-        +'<div class="pct"><div class="agent-toggle" id="atog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="pml">opencode-default</span></div>'
+        +'<div class="pct"><div class="agent-toggle" id="atog"><button class="at-btn'+(_SAVED_AGENT==='build'?' active':'')+'" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn'+(_SAVED_AGENT==='plan'?' active':'')+'" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="pml">opencode-default</span></div>'
         +'<div id="pconv" class="pconv"></div>'
         +'<div class="pin"><div class="cmdmenu" id="cmdm"></div><textarea id="ppt" class="pta" placeholder="Ask opencode..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'cmdm\')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();onTaskBtnClick('+t.id+')}"></textarea>'
         +'<button class="psb" id="psb" onclick="onTaskBtnClick('+t.id+')">▸</button></div></div>';
@@ -1073,11 +1075,11 @@ function showDirAI(id){
   fetch('/api/ai-convos/dir_'+id+'/dismiss?token='+T,{method:'POST'});
   var mopts=['default','free','light','medium','hard'];
   var msel='<select id="dpm" class="ps" onchange="updateModelDisplay()">';
-  mopts.forEach(function(o){msel+='<option value="'+o+'">'+o+'</option>'});
+  mopts.forEach(function(o){msel+='<option value="'+o+'"'+(o===_SAVED_CONFIG?' selected':'')+'>'+o+'</option>'});
   msel+='</select>';
   var h='<span class="bk" onclick="exitDirAI()">&lt; '+esc(NAV.dirName)+'</span>'
     +'<div class="pc"><div class="pch">[AI] directory prompt <span style="display:flex;align-items:center;gap:6px"><span class="pnc" onclick="newDirChat()">[↻]</span></span></div>'
-    +'<div class="pct"><div class="agent-toggle" id="datog"><button class="at-btn active" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="dpml">opencode-default</span></div>'
+    +'<div class="pct"><div class="agent-toggle" id="datog"><button class="at-btn'+(_SAVED_AGENT==='build'?' active':'')+'" data-agent="build" onclick="setAgent(this,\'build\')">BUILD</button><button class="at-btn'+(_SAVED_AGENT==='plan'?' active':'')+'" data-agent="plan" onclick="setAgent(this,\'plan\')">PLAN</button></div>'+msel+'<span class="model-label" id="dpml">opencode-default</span></div>'
     +'<div id="dpconv" class="pconv"></div>'
     +'<div class="pin"><div class="cmdmenu" id="dcmdm"></div><textarea id="dppt" class="pta" placeholder="Ask opencode about this project..." rows="1" oninput="this.style.height=\'\';this.style.height=Math.min(this.scrollHeight,80)+\'px\';onCmdInput(this,\'dcmdm\')" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();onDirBtnClick('+id+')}"></textarea>'
     +'<button class="psb" id="dsb" onclick="onDirBtnClick('+id+')">▸</button></div></div>';
@@ -1136,7 +1138,7 @@ function _doSendDir(raw,id){
   }).catch(function(e){if(e.name==='AbortError'){_DPC.push({role:'error',text:'Cancelled'})}else{_DPC.push({role:'error',text:e.message})};renderDirConv();dequeueDir()});
   document.getElementById('dppt').focus();
 }
-function newDirChat(){fetch('/api/directories/'+NAV.dirId+'/opencode/convo?token='+T,{method:'DELETE'});fetch('/api/ai-convos/dir_'+NAV.dirId+'/dismiss?token='+T,{method:'POST'});if(_DPABORT){_DPABORT.abort();_DPABORT=null}_DPBUSY=false;_DPC=[];_DSID='';_DPQ=[];_PLAN=false;var tog=document.getElementById('datog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderDirConv();updateModelDisplay();updateDirBtn()}
+function newDirChat(){fetch('/api/directories/'+NAV.dirId+'/opencode/convo?token='+T,{method:'DELETE'});fetch('/api/ai-convos/dir_'+NAV.dirId+'/dismiss?token='+T,{method:'POST'});if(_DPABORT){_DPABORT.abort();_DPABORT=null}_DPBUSY=false;_DPC=[];_DSID='';_DPQ=[];_PLAN=(_SAVED_AGENT==='plan');var tog=document.getElementById('datog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="'+_SAVED_AGENT+'"]');if(bt)bt.classList.add('active')}renderDirConv();updateModelDisplay();updateDirBtn()}
 function renderDirConv(){
   var el=document.getElementById('dpconv');
   if(!el)return;
@@ -1149,7 +1151,7 @@ function renderDirConv(){
   el.innerHTML=h;
   el.scrollTop=el.scrollHeight;
 }
-function newChat(){fetch('/api/tasks/'+NAV.taskId+'/opencode/convo?token='+T,{method:'DELETE'});fetch('/api/ai-convos/task_'+NAV.taskId+'/dismiss?token='+T,{method:'POST'});if(_PABORT){_PABORT.abort();_PABORT=null}_PBUSY=false;_PC=[];_SID='';_PQ=[];_PLAN=false;var tog=document.getElementById('atog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="build"]');if(bt)bt.classList.add('active')}renderConv();document.getElementById('ppt').value='';updateModelDisplay();updateTaskBtn()}
+function newChat(){fetch('/api/tasks/'+NAV.taskId+'/opencode/convo?token='+T,{method:'DELETE'});fetch('/api/ai-convos/task_'+NAV.taskId+'/dismiss?token='+T,{method:'POST'});if(_PABORT){_PABORT.abort();_PABORT=null}_PBUSY=false;_PC=[];_SID='';_PQ=[];_PLAN=(_SAVED_AGENT==='plan');var tog=document.getElementById('atog');if(tog){tog.querySelectorAll('.at-btn.active').forEach(function(b){b.classList.remove('active')});var bt=tog.querySelector('.at-btn[data-agent="'+_SAVED_AGENT+'"]');if(bt)bt.classList.add('active')}renderConv();document.getElementById('ppt').value='';updateModelDisplay();updateTaskBtn()}
 function sendPrompt(id){
   var input=document.getElementById('ppt');
   var raw=input.value.trim();
