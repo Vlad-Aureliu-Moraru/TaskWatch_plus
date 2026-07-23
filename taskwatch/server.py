@@ -689,8 +689,9 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 #main{flex:1;overflow-y:auto;padding:0 16px 12px;-webkit-overflow-scrolling:touch}
 #main .bk{display:flex;align-items:center;gap:4px;color:var(--accent);cursor:pointer;font-size:.82rem;padding:8px 0;margin-bottom:2px;font-weight:500}
 #main .bk:active{opacity:.7}
-.c{background:var(--card);border-radius:0;padding:14px;margin-bottom:10px;cursor:pointer;box-shadow:0 0 12px rgba(0,0,0,.5),0 0 4px rgba(229,57,53,.06);border:1px solid var(--border);transition:transform .12s,border-color .12s,box-shadow .12s;animation:up .2s ease-out}
-.c:active{transform:scale(.97)}
+.c{background:var(--card);border-radius:0;padding:14px;margin-bottom:10px;cursor:pointer;box-shadow:0 0 12px rgba(0,0,0,.5),0 0 4px rgba(229,57,53,.06);border:1px solid var(--border);transition:opacity .12s,border-color .12s,box-shadow .12s;animation:up .2s ease-out}
+.c:active{opacity:.85}
+@media(hover:hover){.c:hover{transform:scale(.97);box-shadow:0 0 16px rgba(0,0,0,.6),0 0 8px rgba(229,57,53,.15)}}
 .ca{border-color:var(--accent);box-shadow:0 0 12px rgba(0,0,0,.5),0 0 6px rgba(229,57,53,.12)}
 .cd{border-color:var(--success);box-shadow:0 0 12px rgba(0,0,0,.5),0 0 6px rgba(0,230,118,.08)}
 .ct{border-color:var(--urgent);box-shadow:0 0 12px rgba(0,0,0,.5),0 0 6px rgba(255,140,0,.08)}
@@ -731,7 +732,7 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 .fb button.act{background:var(--accent);color:#fff;border-color:var(--accent)}
 .fb button:active{opacity:.8}
 #bn{flex-shrink:0;display:flex;border-top:1px solid var(--border);background:var(--card);padding:0 0 env(safe-area-inset-bottom,4px)}
-#bn button{flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;padding:7px 0 5px;border:none;background:transparent;color:var(--text3);font-size:.58rem;cursor:pointer;transition:color .12s,border-color .12s;line-height:1.2;border-top:2px solid transparent;font-family:inherit}
+#bn button{flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;padding:10px 0 8px;border:none;background:transparent;color:var(--text3);font-size:.6rem;cursor:pointer;transition:color .12s,border-color .12s;line-height:1.2;border-top:2px solid transparent;font-family:inherit;min-height:48px;-webkit-tap-highlight-color:transparent}
 #bn button.act{color:var(--accent);border-top-color:var(--accent);text-shadow:0 0 6px rgba(229,57,53,.4)}
 #bn button .ni{font-size:.82rem;letter-spacing:.02em}
 .pb{height:4px;background:var(--border);border-radius:0;margin-top:7px;overflow:hidden}
@@ -773,7 +774,7 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
 .pin{position:relative}.cmdmenu{display:none;position:absolute;bottom:100%;left:0;right:0;background:var(--card);border:1px solid var(--border);max-height:160px;overflow-y:auto;z-index:10}.cmdmenu.open{display:block}.cmdmi{padding:6px 10px;font-size:.72rem;color:var(--text2);cursor:pointer;border-bottom:1px solid var(--border);font-family:inherit}.cmdmi:last-child{border-bottom:none}.cmdmi:hover{background:var(--border);color:var(--text)}
 @media(max-width:600px){
   .pm{max-width:100%}
-  .pconv{max-height:45vh}
+  .pconv{max-height:52vh}
   .pct{flex-direction:column}
   .pta{font-size:16px}
   .psb{height:44px;padding:10px 16px}
@@ -781,6 +782,13 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
   .pnc{padding:8px}
   .ai-dir{padding:6px 10px}
   #main{overscroll-behavior:contain}
+  .at-btn{padding:6px 12px}
+  .fb button{padding:8px 14px}
+}
+@media(max-width:400px){
+  #main{padding:0 8px 8px}
+  .c{margin-bottom:6px;padding:10px}
+  #header{padding:8px 8px 0}
 }
 </style>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.5.0/css/xterm.min.css">
@@ -797,7 +805,6 @@ body{font-family:ui-monospace,'SF Mono','JetBrains Mono','Fira Code','Cascadia C
         <button class="act" onclick="navTo(this);showArchives()"><span class="ni">[A]</span><span>Archives</span></button>
         <button onclick="navTo(this);showStats()"><span class="ni">[S]</span><span>Stats</span></button>
         <button onclick="navTo(this);showAFK()"><span class="ni" id="afkbtn">[AFK]</span><span>AFK</span></button>
-        <button onclick="navTo(this);document.getElementById('main').scrollTop=0"><span class="ni">[^]</span><span>Top</span></button>
       </div>
   </div>
 <div id="tp">
@@ -838,7 +845,15 @@ function dequeueTask(){_PBUSY=false;_PABORT=null;if(_PQ.length>0){var n=_PQ.shif
 function dequeueDir(){_DPBUSY=false;_DPABORT=null;if(_DPQ.length>0){var n=_DPQ.shift();_doSendDir(n.raw,n.id)}else{updateDirBtn()}}
 function updateTaskBtn(){var btn=document.getElementById('psb');if(!btn)return;btn.textContent=_PQ.length>0?'■ ('+_PQ.length+')':'▸'}
 function updateDirBtn(){var btn=document.getElementById('dsb');if(!btn)return;btn.textContent=_DPQ.length>0?'■ ('+_DPQ.length+')':'▸'}
-if(window.visualViewport)window.visualViewport.addEventListener('resize',function(){var el=document.querySelector('.pin');if(el&&window.visualViewport.height<window.innerHeight)setTimeout(function(){el.scrollIntoView({behavior:'smooth',block:'nearest'})},300)});
+function fixViewport(){
+  if(!window.visualViewport)return;
+  var vh=window.visualViewport.height,d=window.innerHeight-vh;
+  var app=document.getElementById('app');if(app)app.style.height=vh+'px';
+  var bn=document.getElementById('bn');if(bn)bn.style.paddingBottom='max('+d+'px,env(safe-area-inset-bottom,4px))';
+  var tp=document.getElementById('tp');if(tp)tp.style.bottom=d+'px';
+  var el=document.querySelector('.pin');if(el&&vh<window.innerHeight)el.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+if(window.visualViewport){window.visualViewport.addEventListener('resize',fixViewport);window.addEventListener('resize',fixViewport);setTimeout(fixViewport,100)}
 function togS(){var e=document.getElementById('sbar');e.classList.toggle('open');if(!e.classList.contains('open'))document.getElementById('si').value=''}
 function onS(){if(NAV.level=='tasks'&&_TC.length)renderTasks(_TC)}
 function renderTasks(arr){
