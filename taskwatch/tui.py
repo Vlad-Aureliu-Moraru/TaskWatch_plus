@@ -91,6 +91,7 @@ logger = logging.getLogger("taskwatch.tui")
 class TaskWatchTUI(_WizardMixin, _TimerMixin):
     def __init__(self):
         self._level = Level.ARCHIVES
+        self._prev_level = Level.ARCHIVES
         self._selected_archive_id: int | None = None
         self._selected_archive_name: str | None = None
         self._selected_directory_id: int | None = None
@@ -274,7 +275,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             old_focus = self._list_box.focus_position
         except IndexError:
             old_focus = 0
-        old_level = self._level
+        old_level = self._prev_level
+        urwid.disconnect_signal(self._list_walker, "modified", self._show_detail)
         self._list_walker.clear()
 
         filter_indicator = ""
@@ -461,6 +463,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 label = f"\U000f039a {n.id}: {clip}{ts_display}"
                 w = _make_list_row(label, "", 0, "default", "focus")
                 self._list_walker.append(w)
+        urwid.connect_signal(self._list_walker, "modified", self._show_detail)
+        self._show_detail()
         if self._level == old_level and self._current_items:
             self._list_box.focus_position = min(old_focus, len(self._current_items) - 1)
         self._set_terminal_title()
@@ -776,6 +780,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         idx = self._list_box.focus_position
         if idx >= len(self._current_items):
             return
+        self._prev_level = self._level
         if self._level == Level.ARCHIVES:
             a = self._current_items[idx]
             self._selected_archive_id = a.id
@@ -795,6 +800,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             self._refresh_list()
 
     def _go_back(self) -> None:
+        self._prev_level = self._level
         if self._level == Level.NOTES:
             self._level = Level.TASKS
         elif self._level == Level.TASKS:
@@ -2181,7 +2187,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
 
         content = f"  Week of {monday.strftime('%d/%m/%Y')}\n\n{header}\n{divider}\n" + "\n".join(task_rows)
 
-        ww = LineBox(Text(content))
+        ww = LineBox(Filler(Text(content), valign="top"))
         self._stats_overlay = Overlay(
             ww,
             self._frame,
@@ -2203,7 +2209,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 deadline = task_cmds._display_date(t.deadline)
                 lines.append(f"    \u26a0 {t.name}  [{deadline}]")
         content = "\n".join(lines)
-        ow = LineBox(Text(content))
+        ow = LineBox(Filler(Text(content), valign="top"))
         self._stats_overlay = Overlay(
             ow,
             self._frame,
