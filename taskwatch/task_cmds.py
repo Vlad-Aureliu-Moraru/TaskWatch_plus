@@ -635,12 +635,11 @@ def get_tasks_due_on(date_str: str) -> list[Task]:
 
 
 
-def get_tasks_for_week() -> list[dict]:
-    today = date.today()
-    monday = today - timedelta(days=today.weekday())
-    sunday = monday + timedelta(days=6)
-    monday_str = monday.isoformat()
-    sunday_str = sunday.isoformat()
+def get_tasks_for_week(start_date: date | None = None) -> list[dict]:
+    start = start_date or date.today()
+    end = start + timedelta(days=6)
+    start_str = start.isoformat()
+    end_str = end.isoformat()
     conn = get_conn()
     rows = conn.execute(
         """SELECT t.*, d.name AS dir_name, a.name AS arch_name
@@ -649,7 +648,7 @@ def get_tasks_for_week() -> list[dict]:
            JOIN archives a ON d.archive_id = a.id
            WHERE t.deadline != 'none' AND t.deadline >= ? AND t.deadline <= ?
            ORDER BY t.deadline""",
-        (monday_str, sunday_str),
+        (start_str, end_str),
     ).fetchall()
     result = []
     for r in rows:

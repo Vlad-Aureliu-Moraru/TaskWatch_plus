@@ -2129,19 +2129,20 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         from datetime import timedelta
 
         today = date.today()
-        monday = today - timedelta(days=today.weekday())
-        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        raw = task_cmds.get_tasks_for_week()
+        day_dates = [today + timedelta(days=i) for i in range(7)]
+        day_labels = [d.strftime("%a") for d in day_dates]
+        raw = task_cmds.get_tasks_for_week(start_date=today)
 
-        grouped: dict[str, list] = {d: [] for d in days}
+        grouped: dict[str, list] = {dl: [] for dl in day_labels}
         for r in raw:
             task = r["task"]
             try:
                 dt = date.fromisoformat(task.deadline)
             except (ValueError, TypeError):
                 continue
-            day_name = days[dt.weekday()]
-            grouped[day_name].append(r)
+            day_name = day_labels[dt.weekday()]
+            if day_name in grouped:
+                grouped[day_name].append(r)
 
         term_width = shutil.get_terminal_size().columns
         internal_width = int(term_width * 0.95) - 2
@@ -2152,14 +2153,14 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             max_tasks = 1
 
         date_labels = []
-        for i, day_name in enumerate(days):
-            day_date = monday + timedelta(days=i)
+        for i, day_date in enumerate(day_dates):
+            dl = day_labels[i]
             if col_width >= 10:
-                label = f"{day_name} {day_date.strftime('%d/%m')}"
+                label = f"{dl} {day_date.strftime('%d/%m')}"
             elif col_width >= 7:
-                label = f"{day_name} {day_date.day:02d}"
+                label = f"{dl} {day_date.day:02d}"
             else:
-                label = day_name
+                label = dl
             if day_date == today:
                 label += " \u25c9"
             date_labels.append(label.center(col_width))
@@ -2171,8 +2172,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         task_rows = []
         for row_idx in range(max_tasks):
             row_cells = []
-            for day_name in days:
-                day_tasks = grouped[day_name]
+            for dl in day_labels:
+                day_tasks = grouped[dl]
                 if row_idx < len(day_tasks):
                     r = day_tasks[row_idx]
                     t = r["task"]
@@ -2186,7 +2187,8 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                 row_cells.append(cell)
             task_rows.append(" \u2502 ".join(row_cells))
 
-        content = f"  Week of {monday.strftime('%d/%m/%Y')}\n\n{header}\n{divider}\n" + "\n".join(task_rows)
+        end_date = day_dates[-1]
+        content = f"  {today.strftime('%d/%m/%Y')} \u2014 {end_date.strftime('%d/%m/%Y')}\n\n{header}\n{divider}\n" + "\n".join(task_rows)
 
         ww = LineBox(Filler(Text(content), valign="top"))
         self._stats_overlay = Overlay(
