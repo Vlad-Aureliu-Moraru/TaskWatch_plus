@@ -1,0 +1,31 @@
+{
+  "name": "Tokyo Night",
+  "palette": {
+    "default": ["default", "default"],
+    "head": ["white", "default", "bold"],
+    "dim": ["dark gray", "default"],
+    "done": ["light green", "default"],
+    "warn": ["yellow", "default"],
+    "bar_f": ["default", "default"],
+    "bar_e": ["dark gray", "default"],
+    "error": ["light red", "default"],
+    "help": ["default", "default"],
+    "pane_dim": ["dark gray", "default"],
+    "c1": ["light green", "default"],
+    "c2": ["yellow", "default"],
+    "c3": ["brown", "default"],
+    "c4": ["light red", "default"],
+    "c5": ["dark red", "default"],
+    "c6": ["light blue", "default"],
+    "hm1": ["light cyan", "default"],
+    "hm2": ["dark blue", "default"],
+    "hm3": ["light blue, bold", "default"],
+    "white_fg": ["white", "default"],
+    "light_magenta": ["light magenta", "default"],
+    "light_cyan": ["light cyan", "default"],
+    "bright_yellow": ["yellow, bold", "default"],
+    "black": ["black", "default"],
+    "done_dir": ["light blue", "default"],
+    "search_highlight": ["black, bold", "light blue"]
+  }
+}

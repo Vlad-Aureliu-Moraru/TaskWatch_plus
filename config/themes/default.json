@@ -1,0 +1,31 @@
+{
+  "name": "Default",
+  "palette": {
+    "default": ["default", "default"],
+    "head": ["default", "default", "bold"],
+    "dim": ["dark gray", "default"],
+    "done": ["dark green", "default"],
+    "warn": ["brown", "default"],
+    "bar_f": ["default", "default"],
+    "bar_e": ["dark gray", "default"],
+    "error": ["dark red", "default"],
+    "help": ["default", "default"],
+    "pane_dim": ["dark gray", "default"],
+    "c1": ["dark green", "default"],
+    "c2": ["light green", "default"],
+    "c3": ["yellow", "default"],
+    "c4": ["light red", "default"],
+    "c5": ["dark red", "default"],
+    "c6": ["light blue", "default"],
+    "hm1": ["light green", "default"],
+    "hm2": ["dark green", "default"],
+    "hm3": ["dark green, bold", "default"],
+    "white_fg": ["white", "default"],
+    "light_magenta": ["light magenta", "default"],
+    "light_cyan": ["light cyan", "default"],
+    "bright_yellow": ["yellow, bold", "default"],
+    "black": ["black", "default"],
+    "done_dir": ["dark blue", "default"],
+    "search_highlight": ["black, bold", "yellow"]
+  }
+}

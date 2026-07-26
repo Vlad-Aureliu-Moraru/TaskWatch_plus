@@ -65,6 +65,8 @@ class Level(Enum):
     TASKS = auto()
     NOTES = auto()
 
+PALETTE_DEFAULTS: dict[str, tuple] = {}
+
 PALETTE = [
     ("default", "default", "default"),
     ("focus", "default", "dark blue", "standout"),
@@ -106,6 +108,8 @@ PALETTE = [
     ("done_dir", "dark blue", "default"),
     ("search_highlight", "black, bold", "yellow"),
 ]
+
+PALETTE_DEFAULTS.update({entry[0]: entry for entry in PALETTE})
 
 _HIGHLIGHT_COLORS: list[tuple[str, str]] = [
     ("default", "default"),

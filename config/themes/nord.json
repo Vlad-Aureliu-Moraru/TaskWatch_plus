@@ -1,0 +1,31 @@
+{
+  "name": "Nord",
+  "palette": {
+    "default": ["default", "default"],
+    "head": ["white", "default", "bold"],
+    "dim": ["dark gray", "default"],
+    "done": ["dark cyan", "default"],
+    "warn": ["brown", "default"],
+    "bar_f": ["default", "default"],
+    "bar_e": ["dark gray", "default"],
+    "error": ["light red", "default"],
+    "help": ["default", "default"],
+    "pane_dim": ["dark gray", "default"],
+    "c1": ["light green", "default"],
+    "c2": ["light cyan", "default"],
+    "c3": ["dark cyan", "default"],
+    "c4": ["light red", "default"],
+    "c5": ["dark red", "default"],
+    "c6": ["light blue", "default"],
+    "hm1": ["light cyan", "default"],
+    "hm2": ["dark cyan", "default"],
+    "hm3": ["light cyan, bold", "default"],
+    "white_fg": ["white", "default"],
+    "light_magenta": ["light magenta", "default"],
+    "light_cyan": ["light cyan", "default"],
+    "bright_yellow": ["yellow, bold", "default"],
+    "black": ["black", "default"],
+    "done_dir": ["light blue", "default"],
+    "search_highlight": ["black, bold", "light cyan"]
+  }
+}

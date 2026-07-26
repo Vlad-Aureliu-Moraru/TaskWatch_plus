@@ -42,12 +42,14 @@ from . import (
     undo_cmds,
 )
 from . import db as db_mod
+from . import theme as theme_mod
 from . import timer as timer_mod
 from .paths import CONFIG_PATH, TIMER_STATE_PATH
 from .tui_helpers import (
     CELEBRATION_MESSAGES,
     COMMANDS,
     PALETTE,
+    PALETTE_DEFAULTS,
     _HIGHLIGHT_ALIASES,
     _HIGHLIGHT_COLORS,
     Level,
@@ -145,6 +147,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._caption_alarm_handle: object | None = None
         self._current_prompt: str | tuple = ("standout", "\u276f ")
         self._highlight_color: str = "default"
+        self._theme_name: str = "default"
         self._timer_presets: dict[str, dict] = {}
         self._ai_inbox: queue.Queue = queue.Queue()
         self._ai_chat_widget: ai_chat.AIChatWidget | None = None
@@ -166,6 +169,10 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                                     PALETTE[i] = (entry[0], entry[1], urwid_bg, *entry[3:])
                                 elif len(entry) >= 4 and entry[0].endswith("_focus"):
                                     PALETTE[i] = (entry[0], entry[1], urwid_bg, *entry[3:])
+                    elif line.startswith("THEME:"):
+                        saved = line.split(":", 1)[1].strip()
+                        if saved:
+                            self._theme_name = saved
                     elif line.startswith("SOUND_ENABLED:"):
                         self._sound_enabled = line.split(":", 1)[1].strip().lower() == "true"
                     elif line.startswith("SOUND_WORK:"):
@@ -206,6 +213,12 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
                                 except ValueError:
                                     pass
         except OSError:
+            pass
+
+        try:
+            theme_data = theme_mod.load_theme(self._theme_name)
+            theme_mod.apply_theme(PALETTE, theme_data)
+        except (OSError, json.JSONDecodeError, KeyError):
             pass
 
         self._timer_state_path = TIMER_STATE_PATH
@@ -881,6 +894,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         "ai": "_cmd_ai",
         "aii": "_cmd_aii_chat",
         "highlight": "_show_highlight_picker",
+        "theme": "_cmd_theme",
         "st": "_cmd_start_timer",
         "preset": "_cmd_preset",
         "ts": "_stop_timer", "timerStop": "_stop_timer",
@@ -2729,6 +2743,84 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
             self._end_wizard(f"{name} key tested successfully \u2014 provider connected")
         else:
             self._end_wizard(add_msg, "error")
+
+    def _cmd_theme(self) -> None:
+        themes = theme_mod.list_themes()
+        if not themes:
+            self._set_timed_caption("error", "No themes found in config/themes/ ")
+            return
+        names = [t["name"] for t in themes]
+        current_idx = 0
+        for i, t in enumerate(themes):
+            if t["file"] == f"{self._theme_name}.json":
+                current_idx = i
+                break
+
+        def on_select(idx: int) -> None:
+            selected_file = themes[idx]["file"]
+            selected_stem = Path(selected_file).stem
+            try:
+                theme_data = theme_mod.load_theme(selected_stem)
+            except (OSError, json.JSONDecodeError) as e:
+                self._set_timed_caption("error", f"Failed to load theme: {e} ")
+                self._loop.widget = self._frame
+                return
+            for i, entry in enumerate(PALETTE):
+                PALETTE[i] = PALETTE_DEFAULTS[entry[0]]
+            theme_mod.apply_theme(PALETTE, theme_data)
+            urwid_bg = "default"
+            for cname, cbg in _HIGHLIGHT_COLORS:
+                if cname == self._highlight_color:
+                    urwid_bg = cbg
+                    break
+            for i, entry in enumerate(PALETTE):
+                if entry[0] == "focus":
+                    PALETTE[i] = (entry[0], entry[1], urwid_bg, *entry[3:])
+                elif len(entry) >= 4 and entry[0].endswith("_focus"):
+                    PALETTE[i] = (entry[0], entry[1], urwid_bg, *entry[3:])
+            self._loop.screen.register_palette(PALETTE)
+            self._loop.widget = self._frame
+            self._loop.draw_screen()
+            self._theme_name = selected_stem
+            self._save_theme_config()
+            self._set_timed_caption("done", f"Theme: {theme_data.get('name', selected_stem)} ")
+
+        def on_cancel() -> None:
+            self._loop.widget = self._frame
+            self._set_timed_caption("done", "Cancelled ")
+
+        picker = ColorPickerWidget(
+            [(n, n) for n in names], names[current_idx] if names else "",
+            lambda name: on_select(names.index(name)),
+            on_cancel,
+        )
+        self._stats_overlay = Overlay(
+            picker, self._frame,
+            align="center", width=("relative", 40),
+            valign="middle", height=("relative", 60),
+        )
+        self._loop.widget = self._stats_overlay
+
+    def _save_theme_config(self) -> None:
+        try:
+            lines: list[str] = []
+            found = False
+            try:
+                with open(CONFIG_PATH) as f:
+                    lines = f.readlines()
+            except OSError:
+                pass
+            with open(CONFIG_PATH, "w") as f:
+                for line in lines:
+                    if line.startswith("THEME:"):
+                        f.write(f"THEME:{self._theme_name}\n")
+                        found = True
+                    else:
+                        f.write(line)
+                if not found:
+                    f.write(f"THEME:{self._theme_name}\n")
+        except OSError:
+            pass
 
     def _show_highlight_picker(self) -> None:
         current = self._highlight_color
