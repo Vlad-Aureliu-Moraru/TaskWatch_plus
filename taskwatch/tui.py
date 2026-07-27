@@ -481,6 +481,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         self._show_detail()
         if self._level == old_level and self._current_items:
             self._list_box.focus_position = min(old_focus, len(self._current_items) - 1)
+        self._prev_level = self._level
         self._set_terminal_title()
 
     def _set_terminal_title(self) -> None:
