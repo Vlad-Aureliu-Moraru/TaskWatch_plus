@@ -158,6 +158,7 @@ COMMANDS = [
     "update", "recalculateLevel",
     "serve", "serve stop", "serve status",
     "review",
+    "go",
 ]
 
 CELEBRATION_MESSAGES = [
@@ -244,6 +245,7 @@ HELP_ENTRIES: list[tuple[str, str, str]] = [
     ("Timer", ":preset remove <n>", "Remove preset"),
     ("Timer", ":snooze <days>", "Postpone selected task's deadline by N days"),
     ("Timer", ":dup", "Duplicate selected task"),
+    ("Timer", ":go", "Open a terminal at the attached project directory"),
     ("Pinning", ":pin", "Pin selected task to top"),
     ("Pinning", ":unpin", "Unpin selected task"),
     ("Pinning", ":depends <id>", "Selected task depends on task <id>"),

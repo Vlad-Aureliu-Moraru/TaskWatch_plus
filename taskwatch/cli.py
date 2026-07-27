@@ -1,5 +1,8 @@
 import argparse
 import json
+import os
+import shutil
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -54,6 +57,7 @@ CATEGORY_DESCRIPTIONS = {
     "tui":       "Launch the terminal user interface",
     "serve":     "Start the HTTP server for phone/remote access",
     "waybar":    "Output JSON for Waybar timer display (for status bars)",
+    "open":      "Open a terminal at the attached project directory",
     "stats":     "Show statistics overview or per-directory stats",
     "review":    "Show a comprehensive review (overdue, due soon, completed)",
     "ai":        "AI assistant integration (chat, ask, suggest tasks)",
@@ -82,7 +86,7 @@ def print_global_help(prog: str) -> None:
         ("Timer", ["timer"]),
         ("AI", ["ai"]),
         ("Data", ["export", "import"]),
-        ("Interface", ["tui", "serve", "waybar"]),
+        ("Interface", ["tui", "serve", "waybar", "open"]),
         ("Help", ["help"]),
     ]
     for cat_name, cmds in categories:
@@ -324,6 +328,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ── waybar ──
     sub.add_parser("waybar", help="Output JSON for Waybar timer display")
 
+    # ── open ──
+    sub.add_parser("open", help="Open a terminal at the attached project directory")
+
     # ── help ──
     hp = sub.add_parser("help", help="Show detailed help for a command")
     hp.add_argument("command", nargs="?", default=None, help="Command name")
@@ -392,6 +399,10 @@ def run(args: list[str] | None = None):
 
     if entity == "waybar":
         _handle_waybar()
+        return
+
+    if entity == "open":
+        _handle_open()
         return
 
     if entity == "serve":
@@ -1053,6 +1064,68 @@ def _timer_pause() -> None:
     paused = state.get("paused", False)
     _write_timer_state({"paused": not paused})
     print("Timer paused" if not paused else "Timer unpaused")
+
+
+def _handle_open():
+    attach = directory_cmds.read_attach_file(os.getcwd())
+    if attach is None:
+        print("No .taskwatch-directory found in the current directory.", file=sys.stderr)
+        sys.exit(1)
+    directory_id = attach["directory_id"]
+    directory = directory_cmds.get_directory(directory_id)
+    if directory is None:
+        print(f"Directory {directory_id} not found.", file=sys.stderr)
+        sys.exit(1)
+    project_path = directory.project_path
+    if not project_path:
+        print(f"Directory '{attach['directory_name']}' has no attached project path.", file=sys.stderr)
+        sys.exit(1)
+    term = _detect_terminal()
+    if term is None:
+        print("No supported terminal emulator found.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        if "gnome-terminal" in term:
+            subprocess.Popen(
+                ["gnome-terminal", "--working-directory", project_path, "--", "sh", "-c", "exec $SHELL"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        elif term == "kitty":
+            subprocess.Popen(
+                [term, "--directory", project_path, "--hold", "--", "sh", "-c", "exec $SHELL"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        elif term == "wezterm":
+            subprocess.Popen(
+                [term, "start", "--cwd", project_path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        elif term == "alacritty":
+            subprocess.Popen(
+                [term, "--working-directory", project_path, "-e", "sh", "-c", "exec $SHELL"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            subprocess.Popen(
+                [term, "-e", "sh", "-c", f"cd '{project_path}'; exec $SHELL"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        print(f"Terminal opened at {project_path}")
+    except Exception as e:
+        print(f"Failed to launch terminal: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _detect_terminal() -> str | None:
+    term = os.environ.get("TERMINAL", "")
+    if term and shutil.which(term):
+        return term
+    for c in ["kitty", "alacritty", "wezterm", "gnome-terminal",
+              "konsole", "xfce4-terminal", "foot", "xterm",
+              "lxterminal", "x-terminal-emulator"]:
+        if shutil.which(c):
+            return c
+    return None
 
 
 def _handle_waybar():

@@ -916,6 +916,7 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         "focus": "_cmd_toggle_focus",
         "dedupn": "_cmd_note_dedup",
         "recalculateLevel": "_cmd_recalculate_level",
+        "go": "_cmd_go",
         "serve": "_cmd_serve",
         "review": "_cmd_review",
     }
@@ -2926,10 +2927,49 @@ class TaskWatchTUI(_WizardMixin, _TimerMixin):
         term = os.environ.get("TERMINAL", "")
         if term and shutil.which(term):
             return term
-        for c in ["xterm", "gnome-terminal", "konsole", "xfce4-terminal", "lxterminal", "foot", "alacritty", "kitty", "wezterm"]:
+        for c in ["kitty", "alacritty", "wezterm", "gnome-terminal", "konsole", "xfce4-terminal", "foot", "xterm", "lxterminal"]:
             if shutil.which(c):
                 return c
         return None
+
+    def _cmd_go(self) -> None:
+        pp = self._get_project_path_for_selection()
+        if not pp:
+            self._set_timed_caption("error", "Select a directory with an attached project path ")
+            return
+        term = self._find_terminal()
+        if not term:
+            self._set_timed_caption("error", "No supported terminal emulator found ")
+            return
+        try:
+            if "gnome-terminal" in term:
+                subprocess.Popen(
+                    ["gnome-terminal", "--working-directory", pp, "--", "sh", "-c", "exec $SHELL"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            elif term == "kitty":
+                subprocess.Popen(
+                    [term, "--directory", pp, "--hold", "--", "sh", "-c", "exec $SHELL"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            elif term == "wezterm":
+                subprocess.Popen(
+                    [term, "start", "--cwd", pp],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            elif term == "alacritty":
+                subprocess.Popen(
+                    [term, "--working-directory", pp, "-e", "sh", "-c", "exec $SHELL"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            else:
+                subprocess.Popen(
+                    [term, "-e", "sh", "-c", f"cd '{pp}'; exec $SHELL"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            self._set_timed_caption("done", f"Terminal opened at {pp} ")
+        except Exception as e:
+            self._set_timed_caption("error", f"Failed to launch terminal: {e} ")
 
     def _cmd_serve(self) -> None:
         host = "0.0.0.0"
