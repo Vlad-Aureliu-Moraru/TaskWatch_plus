@@ -20,12 +20,12 @@ def list_directories(archive_id: int | None = None) -> list[Directory]:
     conn = get_conn()
     if archive_id is not None:
         rows = conn.execute(
-            f"SELECT {_DIR_COLS} FROM directories WHERE archive_id = ? ORDER BY id",
+            f"SELECT {_DIR_COLS} FROM directories WHERE archive_id = ? ORDER BY level DESC, id",
             (archive_id,),
         ).fetchall()
     else:
         rows = conn.execute(
-            f"SELECT {_DIR_COLS} FROM directories ORDER BY id"
+            f"SELECT {_DIR_COLS} FROM directories ORDER BY level DESC, id"
         ).fetchall()
     return [_row_to_dir(r) for r in rows]
 
